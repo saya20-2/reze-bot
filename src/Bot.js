@@ -1,47 +1,41 @@
-const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const ModMailManager = require('./managers/ModMail');
 
-class DiscordBot {
+class MyBot extends Client {
     constructor() {
-        this.client = new Client({
+        super({
             intents: [
                 GatewayIntentBits.Guilds,
-                GatewayIntentBits.DirectMessages,
                 GatewayIntentBits.GuildMessages,
-                GatewayIntentBits.MessageContent
+                GatewayIntentBits.MessageContent,
+                GatewayIntentBits.DirectMessages,
+                GatewayIntentBits.GuildVoiceStates
             ],
             partials: [Partials.Channel]
         });
 
-        this.modmail = new ModMailManager(this.client, {
-            categoryId: process.env.MODMAIL_CATEGORY_ID,
-            guildId: process.env.GUILD_ID
-        });
-
+        this.modmail = new ModMailManager(this);
         this.setupEvents();
     }
 
     setupEvents() {
-        this.client.on('ready', () => {
-            console.log(`Logged in as ${this.client.user.tag}`);
-            // Here you would register Slash Commands
-        });
+        this.once('ready', () => console.log(`🚀 ${this.user.tag} is online!`));
 
-        this.client.on('messageCreate', (msg) => {
-            if (msg.author.bot) return;
-            if (!msg.guild) this.modmail.handleDM(msg);
+        this.on('messageCreate', (message) => {
+            if (message.author.bot) return;
+            
+            // Handle DMs via the ModMail manager
+            if (!message.guild) {
+                this.modmail.handleIncomingDM(message);
+            }
         });
-
-        // Slash Command Listener
-        this.client.on('interactionCreate', async (interaction) => {
+        
+        // Interaction listener for Slash Commands
+        this.on('interactionCreate', async (interaction) => {
             if (!interaction.isChatInputCommand()) return;
-            // Command execution logic goes here
+            // logic for executing slash commands goes here
         });
-    }
-
-    start(token) {
-        this.client.login(token);
     }
 }
 
-module.exports = DiscordBot;
+module.exports = MyBot;
