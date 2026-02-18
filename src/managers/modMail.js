@@ -1,15 +1,21 @@
 const { ChannelType, PermissionsBitField, EmbedBuilder } = require('discord.js');
 
 class ModMailManager {
-    constructor(client, config) {
+    constructor(client) {
         this.client = client;
-        this.categoryId = config.categoryId;
-        this.guildId = config.guildId;
+        this.categoryId = process.env.MODMAIL_CATEGORY_ID;
+        this.guildId = process.env.GUILD_ID;
     }
 
     async handleDM(message) {
         const guild = this.client.guilds.cache.get(this.guildId);
+        if (!guild) {
+            return console.error("Reze got lost trying to find the Guild. ID?");
+        }
         const category = guild.channels.cache.get(this.categoryId);
+        if (!category) {
+            return console.error("Reze got lost trying to find the category. ID?");
+        }
         const ticketName = `ticket-${message.author.username.toLowerCase()}`;
 
         // Find or Create Channel

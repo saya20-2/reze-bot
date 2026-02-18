@@ -1,19 +1,29 @@
-require('dotenv').config();
+const path = require('node:path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+console.log("Token check:", process.env.DISCORD_TOKEN ? "Token exists!" : "Token is UNDEFINED");
 const { REST, Routes } = require('discord.js');
-const reply = require('./src/commands/reply');
+const fs = require('node:fs');
 
-const commands = [reply.data.toJSON()];
+
+const commands = [];
+const commandsPath = path.join(__dirname, 'commands');
+const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+
+for (const file of commandFiles) {
+    const command = require(path.join(commandsPath, file));
+    commands.push(command.data.toJSON());
+}
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
 (async () => {
     try {
-        console.log('Refreshing Slash Commands...');
+        console.log(`Started refreshing ${commands.length} slash commands.`);
         await rest.put(
             Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
             { body: commands },
         );
-        console.log('Successfully registered /reply');
+        console.log('Successfully reloaded slash commands.');
     } catch (error) {
         console.error(error);
     }
