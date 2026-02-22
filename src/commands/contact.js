@@ -21,6 +21,12 @@ module.exports = {
                 ephemeral: true 
             });
         }
+        if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID)) {
+        return interaction.reply({ 
+            content: "You do not have the required Incubator role to use this command.", 
+            ephemeral: true 
+        });
+    }
 
         const user = interaction.options.getUser('user');
         const reason = interaction.options.getString('reason');

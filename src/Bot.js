@@ -32,27 +32,34 @@ class MyBot extends Client {
     }
 
     setupEvents() {
-        this.once('ready', () => console.log(`Registered ${this.commands.size} commands. Bot is online!`));
+    this.once('ready', () => {
+        console.log(`Registered ${this.commands.size} commands. Reze is online!`);
+    });
 
-        this.on('interactionCreate', async interaction => {
-            if (!interaction.isChatInputCommand()) return;
+    this.on('interactionCreate', async (interaction) => {
+        if (!interaction.isChatInputCommand()) return;
 
-            const command = this.commands.get(interaction.commandName);
-            if (!command) return;
+        const command = this.commands.get(interaction.commandName);
+        if (!command) return;
 
-            try {
-                await command.execute(interaction);
-            } catch (error) {
-                console.error(error);
-                await interaction.reply({ content: 'There was an error while executing this command!', ephemeral: true });
+        try {
+            await command.execute(interaction);
+        } catch (error) {
+            console.error("Command Error:", error);
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: 'Command had an error, check syntax', ephemeral: true });
             }
-        });
+        }
+    });
 
-        this.on('messageCreate', (message) => {
-            if (message.author.bot) return;
-            if (!message.guild) this.modmail.handleDM(message);
-        });
-    }
+    this.on('messageCreate', (message) => {
+        if (message.author.bot) return;
+
+        if (message.guild === null) {
+            this.modmail.handleIncomingDM(message);
+        }
+    });
+}
 }
 
 module.exports = MyBot;

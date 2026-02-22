@@ -66,6 +66,11 @@ async handleDM(message) {
     
     // Forward the message
     await channel.send(`**${message.author.username}:** ${message.content}`);
+    
+    if (message.attachments.size > 0) {
+    const attachmentUrls = message.attachments.map(a => a.url);
+    await channel.send({ content: "**Attachments:**", files: attachmentUrls });
+}
 
     try {
         await message.reply({

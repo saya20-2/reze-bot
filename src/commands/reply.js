@@ -7,29 +7,54 @@ module.exports = {
         .addStringOption(option => 
             option.setName('message')
                 .setDescription('The message to send to the user')
-                .setRequired(true)),
+                .setRequired(true))
+                .addAttachmentOption(option =>
+            option.setName('file')
+                .setDescription('Attach an image or file to the reply')
+                .setRequired(false)),
 
     async execute(interaction) {
-        // 1. Get the User ID from the channel topic we set earlier
+        if (!interaction.member.roles.cache.has(process.env.STAFF_ROLE_ID)) {
+        return interaction.reply({ 
+            content: "Only Incubators can reply to tickets.", 
+            ephemeral: true 
+        });
+    }
         const topic = interaction.channel.topic;
         if (!topic || !topic.includes('UserID:')) {
             return interaction.reply({ content: 'This is not a valid ModMail channel.', ephemeral: true });
         }
 
-        const userId = topic.split('UserID:')[1];
+        const attachment = interaction.options.getAttachment('file');
         const replyText = interaction.options.getString('message');
+
+        if (!replyText) {
+            return interaction.reply({ content: "Provided message must be inside the specified 'Message' argument text box.", ephemeral: true });
+        }
+
+        await interaction.deferReply();
+
+        const userId = topic.split('UserID:')[1];
 
         try {
             const user = await interaction.client.users.fetch(userId);
-            
-            // 2. Send the DM to the user
-            await user.send(`**Staff (${interaction.user.username}):** ${replyText}`);
-            
-            // 3. Confirm to the mod
-            await interaction.reply({ content: `Reply sent to ${user.tag}` });
-        } catch (error) {
-            console.error(error);
-            await interaction.reply({ content: 'Failed to send DM. The user might have DMs disabled.', ephemeral: true });
+            const payload = {
+                content: `**Staff (${interaction.user.username}):** ${replyText}`
+            };
+
+            if (attachment) {
+                payload.files = [attachment.url];
+            }
+
+            await user.send(payload);
+
+            await interaction.editReply({ 
+                content: `Replied to ${user.username}: ${replyText}`,
+                files: attachment ? [attachment.url] : []
+            });
+        } catch (err) {
+            console.error(err);
+            await interaction.editReply({ content: 'Failed to send DM. The user might have DMs disabled.', ephemeral: true });
         }
     }
 };
