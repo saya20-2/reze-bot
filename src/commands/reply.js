@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -11,19 +11,29 @@ module.exports = {
                 .addAttachmentOption(option =>
             option.setName('file')
                 .setDescription('Attach an image or file to the reply')
-                .setRequired(false)),
+                .setRequired(false))
+            .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
 
     async execute(interaction) {
-        if (!interaction.member.roles.cache.has(process.env.STAFF_ROLE_ID)) {
+        const topic = interaction.channel.topic;
+        if (!topic || !topic.includes('UserID:')) {
+            return interaction.reply({ content: 'not a valid modmail channel', ephemeral: true});
+        }
+        const userId = topic.split('UserID:')[1];
+        if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID)) {
         return interaction.reply({ 
             content: "Only Incubators can reply to tickets.", 
             ephemeral: true 
         });
     }
-        const topic = interaction.channel.topic;
-        if (!topic || !topic.includes('UserID:')) {
-            return interaction.reply({ content: 'This is not a valid ModMail channel.', ephemeral: true });
+        if (interaction.client.modmail.locks.has(userId)) {
+            return interaction.reply({ content: "Wait is already being processed, 5 sec cooldown"});
         }
+
+        interaction.client.modmail.locks.add(userId);
+        setTimeout(() => { interaction.client.modmail.locks.delete(userId); }, 5000);
+    
+        await interaction.deferReply();
 
         const attachment = interaction.options.getAttachment('file');
         const replyText = interaction.options.getString('message');
@@ -31,10 +41,6 @@ module.exports = {
         if (!replyText) {
             return interaction.reply({ content: "Provided message must be inside the specified 'Message' argument text box.", ephemeral: true });
         }
-
-        await interaction.deferReply();
-
-        const userId = topic.split('UserID:')[1];
 
         try {
             const user = await interaction.client.users.fetch(userId);

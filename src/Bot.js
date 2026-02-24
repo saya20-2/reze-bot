@@ -56,7 +56,7 @@ class MyBot extends Client {
         if (message.author.bot) return;
 
         if (message.guild === null) {
-            this.modmail.handleIncomingDM(message);
+            this.modmail.handleDM(message);
         }
     });
 }

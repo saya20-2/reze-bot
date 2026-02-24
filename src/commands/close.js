@@ -1,11 +1,18 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('close')
-        .setDescription('Closes the ticket and deletes the channel'),
+        .setDescription('Closes the ticket and deletes the channel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
 
     async execute(interaction) {
+        if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID)) {
+        return interaction.reply({ 
+            content: "No have permission to close tickets.", 
+            ephemeral: true 
+        });
+    }
         const userId = interaction.channel.topic?.split('UserID:')[1];
         if (!userId) return interaction.reply({ content: "Not a ticket channel.", ephemeral: true });
 
