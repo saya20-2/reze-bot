@@ -20,14 +20,15 @@ module.exports = {
             return interaction.reply({ content: 'not a valid modmail channel', ephemeral: true});
         }
         const userId = topic.split('UserID:')[1];
-        if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID)) {
+        if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID) && 
+            !interaction.member.roles.cache.has(process.env.SMALL_INC_ROLE_ID)) {
         return interaction.reply({ 
             content: "Only Incubators can reply to tickets.", 
             ephemeral: true 
         });
     }
         if (interaction.client.modmail.locks.has(userId)) {
-            return interaction.reply({ content: "Wait is already being processed, 5 sec cooldown"});
+            return interaction.reply({ content: "Reply was already sent", ephemeral: true});
         }
 
         interaction.client.modmail.locks.add(userId);

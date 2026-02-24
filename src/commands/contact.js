@@ -28,7 +28,8 @@ module.exports = {
         });
     }
 
-    if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID)) {
+    if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID) && 
+        !interaction.member.roles.cache.has(process.env.SMALL_INC_ROLE_ID)) {
         return interaction.reply({ content: "You do not have the required role.", ephemeral: true });
     }
 

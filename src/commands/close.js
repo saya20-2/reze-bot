@@ -7,7 +7,8 @@ module.exports = {
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
 
     async execute(interaction) {
-        if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID)) {
+        if (!interaction.member.roles.cache.has(process.env.INCUBATOR_ROLE_ID) && 
+            !interaction.member.roles.cache.has(process.env.SMALL_INC_ROLE_ID)) {
         return interaction.reply({ 
             content: "No have permission to close tickets.", 
             ephemeral: true 
@@ -19,9 +20,9 @@ module.exports = {
         if (interaction.client.modmail.locks.has(userId)) {
             return interaction.reply({ content: "Already closing", ephemeral: true});
         }
-        await interaction.deferReply();
-
+        
         interaction.client.modmail.locks.add(userId);
+        await interaction.deferReply();
 
         await interaction.editReply({
             content: "Ticket closing in 5 seconds...",
