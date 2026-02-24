@@ -2,6 +2,7 @@ const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js'
 const fs = require('node:fs');
 const path = require('node:path');
 const ModMailManager = require('./managers/modMail');
+const callResponseCooldown = new Map();
 
 class MyBot extends Client {
     constructor() {
@@ -52,8 +53,35 @@ class MyBot extends Client {
         }
     });
 
-    this.on('messageCreate', (message) => {
+    this.on('messageCreate', async (message) => {
         if (message.author.bot) return;
+        const callResponse = {
+            'bomb': 'boom 💣',
+            'pull the pin': 'boom 💣',
+            'bomb devil': {
+                content: 'boo!',
+                files: ['./assets/reze-chainsaw-man-reze.gif']
+            }
+        }; 
+        const content = message.content.toLowerCase().trim();
+        for (const [trigger, response] of Object.entries(callResponse)) {
+            if (content === trigger) {
+                const now = Date.now();
+                const cooldownLength = 5000;
+                
+                if (callResponseCooldown.has(trigger)) {
+                    const expirationTime = callResponseCooldown.get(trigger) + cooldownLength;
+                    if (now < expirationTime) {
+                        return;
+                    }
+                }
+                const payload = typeof response === 'string' ? { content: response } : response;
+                await message.reply(payload);
+
+                callResponseCooldown.set(message.author.id, now);
+                return;
+            }
+        }
 
         if (message.guild === null) {
             this.modmail.handleDM(message);

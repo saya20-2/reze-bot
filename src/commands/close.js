@@ -16,14 +16,37 @@ module.exports = {
         const userId = interaction.channel.topic?.split('UserID:')[1];
         if (!userId) return interaction.reply({ content: "Not a ticket channel.", ephemeral: true });
 
-        await interaction.reply("Closing ticket in 5 seconds...");
-        
-        // Notify user
+        if (interaction.client.modmail.locks.has(userId)) {
+            return interaction.reply({ content: "Already closing", ephemeral: true});
+        }
+        await interaction.deferReply();
+
+        interaction.client.modmail.locks.add(userId);
+
+        await interaction.editReply({
+            content: "Ticket closing in 5 seconds...",
+            files: ['./assets/reze_bye.gif']
+        });
+
         try {
             const user = await interaction.client.users.fetch(userId);
-            await user.send("Your ticket has been closed by staff. DM again to open a new one.");
-        } catch (e) { /* ignore if DMs closed */ }
-
-        setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+            await user.send({
+                content: "Ticket has been closed, DM again to open a new one!",
+                files: ['./assets/reze_bye.gif']
+            });
+        } catch (e) {
+            console.log('DM failed');
+        }
+        
+        setTimeout(async () => {
+        try {
+            await interaction.channel.delete(`Ticket closed by ${interaction.user.tag}`);
+            interaction.client.modmail.locks.delete(userId);
+        } catch (err) {
+            console.error('Failed to delete channel:', err);
+            interaction.client.modmail.locks.delete(userId);
+        }
+    }, 5000);
+        
     }
 };
