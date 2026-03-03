@@ -11,17 +11,24 @@ class ModMailManager {
     }
 
 async initiateStaffTicket(targetUser, staffMember, reason) {
+    const incubatorRole = process.env.INCUBATOR_ROLE_ID;
+    const smallIncRole = process.env.SMALL_INC_ROLE_ID;
     const guild = await this.client.guilds.fetch(this.guildId);
     const existingChannel = guild.channels.cache.find(c => c.topic === `UserID:${targetUser.id}`);
     const userId = targetUser.id;
-    
+
     if (existingChannel) throw new Error("A ticket channel for this user already exists.");
-    const channel = await guild.channels.create({
+        const channel = await guild.channels.create({
         name: `ticket-${targetUser.username}`,
         type: ChannelType.GuildText,
         parent: this.categoryId,
         topic: `UserID:${targetUser.id}`,
         reason: `ModMail initiated by ${staffMember.tag}`
+    });
+
+    await channel.send({
+    content: `**New Ticket Opened!**\n<@&${incubatorRole}> <@&${smallIncRole}>`,
+    allowedMentions: { roles: [incubatorRole, smallIncRole] }
     });
 
     // messaging user
@@ -38,6 +45,8 @@ async initiateStaffTicket(targetUser, staffMember, reason) {
 async handleDM(message) {
     const userId = message.author.id;
     const now = Date.now();
+    const incubatorRole = process.env.INCUBATOR_ROLE_ID;
+    const smallIncRole = process.env.SMALL_INC_ROLE_ID;
 
     if (this.cooldowns.has(userId)) {
         const expiry = this.cooldowns.get(userId);
@@ -87,7 +96,11 @@ async handleDM(message) {
         .setTitle('New ModMail Ticket')
         .setColor('#00ff00')
         .setDescription(`User: ${message.author.tag}\nID: ${message.author.id}`);
-        await channel.send({ embeds: [startEmbed] });
+        await channel.send({
+            content: `**New Ticket Opened!**\n<@&${incubatorRole}> <@&${smallIncRole}>`,
+            allowedMentions: { roles: [incubatorRole, smallIncRole] },
+            embeds: [startEmbed],
+        });
     }
     
     // Forward the message

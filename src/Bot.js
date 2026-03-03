@@ -1,12 +1,8 @@
 const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
-const envFile = process.env.NODE_ENV === 'production' ? '.env.prod' : '.env.poc';
 const ModMailManager = require('./managers/modMail');
 const callResponseCooldown = new Map();
-require('dotenv').config({
-    path: path.resolve(process.cwd(), envFile)
-});
 
 class MyBot extends Client {
     constructor() {

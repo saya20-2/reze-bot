@@ -1,10 +1,18 @@
-const path = require('node:path');
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+const {REST, Routes} = require('discord.js');
+const path = require('path');
+const fs = require('fs');
+const mode = process.env.NODE_ENV || 'development';
+const isProd = mode === 'prod' || mode === 'production';
+const envFile = isProd ? '.env.prod' : '.env.poc';
+const envPath = path.resolve(process.cwd(), envFile);
+require('dotenv').config({ path: envPath });
 console.log("Token check:", process.env.DISCORD_TOKEN ? "Token exists!" : "Token is UNDEFINED");
-const { REST, Routes } = require('discord.js');
-const fs = require('node:fs');
 
-
+console.log(`Deploying to: ${isProd ? 'PRODUCTION' : 'POC'}`);
+if (!process.env.DISCORD_TOKEN) {
+    console.error(`Token is UNDEFINED in ${envPath}`);
+    process.exit(1);
+}
 const commands = [];
 const commandsPath = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
