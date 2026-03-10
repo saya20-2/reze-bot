@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection, ActivityType } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
 const ModMailManager = require('./managers/modMail');
@@ -12,6 +12,8 @@ class MyBot extends Client {
                 GatewayIntentBits.DirectMessages,
                 GatewayIntentBits.GuildMessages,
                 GatewayIntentBits.MessageContent,
+                GatewayIntentBits.GuildPresences,
+                GatewayIntentBits.GuildMembers
             ],
             partials: [Partials.Channel]
         });
@@ -33,7 +35,14 @@ class MyBot extends Client {
     }
 
     setupEvents() {
-    this.once('ready', () => {
+    this.once('ready', (c) => {
+        const isProd = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'prod';
+
+        this.user.setActivity({
+        name: isProd ? 'Message me to get in touch with the Madocord team!' : 'with POC fuses',
+        type: ActivityType.Listening
+        });
+
         console.log(`Registered ${this.commands.size} commands. Reze is online!`);
     });
 
