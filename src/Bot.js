@@ -35,16 +35,18 @@ class MyBot extends Client {
     }
 
     setupEvents() {
-    this.once('ready', (c) => {
-        const isProd = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'prod';
-
-        this.user.setActivity({
-        name: isProd ? 'Message me to get in touch with the Madocord team!' : 'with POC fuses',
-        type: ActivityType.Listening
+    this.on('ready', (c) => {
+        const setBotStatus = () => {
+            c.user.setActivity({
+                name: process.env.NODE_ENV === 'production' ? 'Message me to get in touch with the Madocord team!' : 'with POC fuses',
+                type: ActivityType.Listening
         });
+    };
 
-        console.log(`Registered ${this.commands.size} commands. Reze is online!`);
-    });
+    setBotStatus(); 
+    
+    setInterval(setBotStatus, 3600000); 
+});
 
     this.on('interactionCreate', async (interaction) => {
         if (!interaction.isChatInputCommand()) return;
