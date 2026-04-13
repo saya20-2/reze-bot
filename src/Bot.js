@@ -20,6 +20,7 @@ class MyBot extends Client {
 
         this.commands = new Collection();
         this.modmail = new ModMailManager(this);
+        this.modMailManager = new ModMailManager(this);
         
         this.loadCommands();
         this.setupEvents();
@@ -35,13 +36,21 @@ class MyBot extends Client {
     }
 
     setupEvents() {
-    this.on('ready', (c) => {
+    this.on('ready', async (c) => {
+        if (this.modMailManager) {
+            await this.modMailManager.rehydrateTickets();
+        } else {
+            console.error("ModMailManager not found on Bot instance!");
+        }
+
         const setBotStatus = () => {
             c.user.setActivity({
-                name: process.env.NODE_ENV === 'production' ? 'Message me to get in touch with the Madocord team!' : 'with POC fuses',
+                name: process.env.NODE_ENV === 'production' 
+                    ? 'Message me to get in touch with the Madocord team!' 
+                    : 'with POC fuses',
                 type: ActivityType.Listening
-        });
-    };
+            });
+        };
 
     setBotStatus(); 
     
