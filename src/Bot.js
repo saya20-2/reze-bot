@@ -67,6 +67,7 @@ class MyBot extends Client {
     this.on('messageCreate', async (message) => {
         if (message.author.bot) return;
         const callResponse = {
+            'school': 'I never went to school either...',
             'bomb': 'boom 💣',
             'pull the pin': 'boom 💣',
             'bomb devil': {
