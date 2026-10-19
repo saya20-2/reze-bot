@@ -1,3 +1,4 @@
+const LavalinkManager = require('./managers/lavalinkManager');
 const { Client, GatewayIntentBits, Partials, Collection, ActivityType } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -12,6 +13,7 @@ class MyBot extends Client {
                 GatewayIntentBits.DirectMessages,
                 GatewayIntentBits.GuildMessages,
                 GatewayIntentBits.MessageContent,
+                GatewayIntentBits.GuildVoiceStates,
                 GatewayIntentBits.GuildPresences,
                 GatewayIntentBits.GuildMembers
             ],
@@ -21,6 +23,7 @@ class MyBot extends Client {
         this.commands = new Collection();
         this.modmail = new ModMailManager(this);
         this.modMailManager = new ModMailManager(this);
+        this.lavalinkManager = new LavalinkManager(this);
         
         this.loadCommands();
         this.setupEvents();
@@ -99,7 +102,7 @@ class MyBot extends Client {
                 const payload = typeof response === 'string' ? { content: response } : response;
                 await message.reply(payload);
 
-                callResponseCooldown.set(message.author.id, now);
+                callResponseCooldown.set(trigger, now);
                 return;
             }
         }
