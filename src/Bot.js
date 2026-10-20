@@ -1,4 +1,5 @@
-const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
+const LavalinkManager = require('./managers/lavalinkManager');
+const { Client, GatewayIntentBits, Partials, Collection, ActivityType } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
 const ModMailManager = require('./managers/modMail');
@@ -12,12 +13,17 @@ class MyBot extends Client {
                 GatewayIntentBits.DirectMessages,
                 GatewayIntentBits.GuildMessages,
                 GatewayIntentBits.MessageContent,
+                GatewayIntentBits.GuildVoiceStates,
+                GatewayIntentBits.GuildPresences,
+                GatewayIntentBits.GuildMembers
             ],
             partials: [Partials.Channel]
         });
 
         this.commands = new Collection();
         this.modmail = new ModMailManager(this);
+        this.modMailManager = new ModMailManager(this);
+        this.lavalinkManager = new LavalinkManager(this);
         
         this.loadCommands();
         this.setupEvents();
@@ -33,9 +39,26 @@ class MyBot extends Client {
     }
 
     setupEvents() {
-    this.once('ready', () => {
-        console.log(`Registered ${this.commands.size} commands. Reze is online!`);
-    });
+    this.on('ready', async (c) => {
+        if (this.modMailManager) {
+            await this.modMailManager.rehydrateTickets();
+        } else {
+            console.error("ModMailManager not found on Bot instance!");
+        }
+
+        const setBotStatus = () => {
+            c.user.setActivity({
+                name: process.env.NODE_ENV === 'production' 
+                    ? 'Message me to get in touch with the Madocord team!' 
+                    : 'with POC fuses',
+                type: ActivityType.Listening
+            });
+        };
+
+    setBotStatus(); 
+    
+    setInterval(setBotStatus, 3600000); 
+});
 
     this.on('interactionCreate', async (interaction) => {
         if (!interaction.isChatInputCommand()) return;
@@ -56,6 +79,7 @@ class MyBot extends Client {
     this.on('messageCreate', async (message) => {
         if (message.author.bot) return;
         const callResponse = {
+            'school': 'I never went to school either...',
             'bomb': 'boom 💣',
             'pull the pin': 'boom 💣',
             'bomb devil': {
@@ -78,7 +102,7 @@ class MyBot extends Client {
                 const payload = typeof response === 'string' ? { content: response } : response;
                 await message.reply(payload);
 
-                callResponseCooldown.set(message.author.id, now);
+                callResponseCooldown.set(trigger, now);
                 return;
             }
         }
