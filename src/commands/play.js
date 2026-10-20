@@ -29,21 +29,7 @@ module.exports = {
                     shardId: interaction.guild.shardId,
                 });
 
-                // Auto-play next track in queue when current track ends
-                player.on('end', async () => {
-                    if (queue.tracks.length > 0) {
-                        const nextTrack = queue.tracks.shift();
-                        queue.current = nextTrack;
-                        await player.playTrack({ track: { encoded: nextTrack.encoded }});
-                    } else {
-                        queue.current = null;
-                    }
-                });
-
-                player.on('exception', (error) => {
-                    console.error('[Lavalink Player Exception]:', error);
-                    queue.current = null;
-                });
+                lavalink.setupPlayer(player);
             }
 
             const node = player.node;
@@ -56,40 +42,39 @@ module.exports = {
                 return interaction.editReply('Oops! Reze couldn’t find anything matching that query. Try a different search!');
             }
 
-            let tracks = [];
+            const wasIdle = !queue.current;
 
             if (res.loadType === 'playlist') {
-                tracks = res.data.tracks;
+                let tracks = res.data.tracks;
                 if (!tracks || !tracks.length) {
                     return interaction.editReply('Couldn’t extract tracks from that playlist!');
                 }
-                
+
+                const selected = res.data.info?.selectedTrack ?? -1;
+                const startedMidway = selected > 0 && selected < tracks.length;
+                if (startedMidway) tracks = tracks.slice(selected);
+
                 queue.addMultiple(tracks);
+                if (wasIdle) await lavalink.playNext(interaction.guildId);
 
-                if (!player.track && !queue.current) {
-        const firstTrack = queue.tracks.shift();
-        queue.current = firstTrack;
-        await player.playTrack({ track: { encoded: firstTrack.encoded } });
-    }
-    return interaction.editReply(`Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks into the queue!`);
+                return interaction.editReply(
+                    `Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks into the queue!` +
+                    (startedMidway ? ' (Starting from the video in your link.)' : '')
+                );
+            }
 
-            } else {
-                tracks = Array.isArray(res.data) ? res.data : [res.data];
-                if (!tracks.length) {
-                    return interaction.editReply('💥 No track results found!');
-                }
-            } 
-        
-        
-        const track = tracks[0];
-            if (!player.track && !queue.current) {
-                queue.current = track;
-                await player.playTrack({ track: { encoded: track.encoded } });
+            const tracks = Array.isArray(res.data) ? res.data : [res.data];
+            if (!tracks.length) {
+                return interaction.editReply('No track results found!');
+            }
+
+            const track = tracks[0];
+            queue.add(track);
+            if (wasIdle) {
+                await lavalink.playNext(interaction.guildId);
                 return interaction.editReply(`Now playing: **[${track.info.title}](${track.info.uri})** 💣`);
-            } else {
-                queue.add(track);
-                return interaction.editReply(`Added to queue: **[${track.info.title}](${track.info.uri})** ⚡`);
-            } // 👈 Added missing closing brace
+            }
+            return interaction.editReply(`Added to queue: **[${track.info.title}](${track.info.uri})** ⚡`);
         } catch (error) {
             console.error('Play command error:', error);
             return interaction.editReply('Madokami hasnt blessed us trying to play that track.');

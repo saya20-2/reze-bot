@@ -18,14 +18,12 @@ module.exports = {
 
         if (queue.tracks.length === 0) {
             return interaction.reply({
-                content: "*Aw, snap!* There are no more songs left in the queue to skip to! We're at the end of the line, boom!",
+                content: "*Aw, snap!* There are no more songs left in the queue to skip to! We're at the end of the line, boom! (Use `/clear stop:true` if you want me to stop.)",
                 ephemeral: true
             });
         }
 
-        const nextTrack = queue.tracks.shift();
-        queue.current = nextTrack;
-        await player.playTrack({ track: nextTrack.encoded });
+        const nextTrack = await lavalink.playNext(interaction.guildId);
 
         return interaction.reply(`Playtime's up! Skipped to the next track: **[${nextTrack.info.title}](${nextTrack.info.uri})**`);
     }
