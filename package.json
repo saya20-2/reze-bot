@@ -2,6 +2,10 @@
   "dependencies": {
     "discord.js": "^14.25.1",
     "dotenv": "^17.3.1",
-    "shoukaku": "^4.3.0"
+    "shoukaku": "^4.3.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "allowScripts": {
+    "tesseract.js@7.0.0": true
   }
 }

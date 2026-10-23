@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, Partials, Collection, ActivityType } = requir
 const fs = require('node:fs');
 const path = require('node:path');
 const ModMailManager = require('./managers/modMail');
+const AutoModManager = require('./managers/autoMod');
 const callResponseCooldown = new Map();
 
 class MyBot extends Client {
@@ -24,6 +25,7 @@ class MyBot extends Client {
         this.modmail = new ModMailManager(this);
         this.modMailManager = new ModMailManager(this);
         this.lavalinkManager = new LavalinkManager(this);
+        this.autoMod = new AutoModManager(this);
         
         this.loadCommands();
         this.setupEvents();
@@ -77,6 +79,7 @@ class MyBot extends Client {
     });
 
     this.on('messageCreate', async (message) => {
+        await this.autoMod.handleMessage(message);
         if (message.author.bot) return;
         const callResponse = {
             'school': 'I never went to school either...',

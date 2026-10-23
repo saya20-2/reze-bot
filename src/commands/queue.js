@@ -61,7 +61,7 @@ module.exports = {
         }
 
         const embed = new EmbedBuilder()
-            .setTitle('💣 Music Queue')
+            .setTitle('Music Queue')
             .setDescription(sections.join('\n\n'));
 
         if (queue.tracks.length > 0) {
