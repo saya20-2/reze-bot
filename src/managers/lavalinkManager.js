@@ -48,9 +48,9 @@ class LavalinkManager {
         }];
 
         const ShoukakuOptions = {
-            moveOnDisconnect: false,
-            resumeKey: 'RezeMusic',
-            resumeTimeout: 30,
+            resume: true,
+            resumeTimeout: 60,
+            resumeByLibrary: true,
             reconnectTries: 5,
             reconnectInterval: 5000,
         };
@@ -79,12 +79,25 @@ class LavalinkManager {
         this.scheduleIdle(guildId);
         player.on('start', () => this.clearIdle(guildId));
         player.on('end', async (event) => {
+            const info = event.track?.info;
+            if ((event.reason === 'finished' || event.reason === 'loadFailed') && info && !info.isStream
+                && info.length - player.position > 15000) {
+                console.warn(`[Lavalink] Track ended early (${event.reason}) at ~${Math.round(player.position / 1000)}s of ${Math.round(info.length / 1000)}s: ${info.title}`);
+            }
             if (event.reason !== 'finished' && event.reason !== 'loadFailed') return;
             try {
                 await this.playNext(guildId);
             } catch (error) {
                 console.error('[Lavalink] Failed to play next track:', error);
             }
+        });
+
+        player.on('stuck', (event) => {
+            console.warn(`[Lavalink] Track stuck (no audio for ${event.thresholdMs}ms): ${event.track?.info?.title}`);
+        });
+
+        player.on('closed', (event) => {
+            console.warn(`[Lavalink] Discord voice websocket closed: code ${event.code}, byRemote ${event.byRemote}, reason "${event.reason}"`);
         });
 
         player.on('exception', (error) => {
@@ -130,7 +143,7 @@ class LavalinkManager {
         }
     }
 
-    // ---- auto-disconnect ----
+    // auto-disconnect 
 
     scheduleIdle(guildId) {
         if (this.idleTimers.has(guildId)) return;
