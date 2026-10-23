@@ -1,4 +1,8 @@
-const Tesseract = require('tesseract.js');
+const Tesseract = require("node-tesseract-ocr");
+const fs = require('fs/promises');
+const path = require('path');
+const os = require('os');
+const sharp = require('sharp');
 
 class AutoModManager {
     constructor(client) {
@@ -96,12 +100,34 @@ class AutoModManager {
 
     
     async runOCR(imageUrl) {
+        let tempFilePath = null;
+        const config = {
+            lang: "eng",
+            oem: 1, // Neural net OCR engine mode
+            psm: 3  // Fully automatic page segmentation
+        };
+
         try {
-            const { data: { text } } = await Tesseract.recognize(imageUrl, 'eng');
+            const response = await fetch(imageUrl);
+            const buffer = Buffer.from(await response.arrayBuffer());
+            const processedBuffer = await sharp(buffer)
+                .grayscale()
+                .normalize()
+                .threshold(160)
+                .toBuffer();
+
+            tempFilePath = path.join(os.tmpdir(), `automod_${Date.now()}.png`);
+            await fs.writeFile(tempFilePath, processedBuffer);
+
+            const text = await tesseract.recognize(tempFilePath, config);
             return text;
         } catch (error) {
-            console.error('OCR Error:', error);
+            console.error('[AutoMod] Native OCR Error:', error);
             return null;
+        } finally {
+            if (tempFilePath) {
+                await fs.unlink(tempFilePath).catch(() => {});
+            }
         }
     }
 
