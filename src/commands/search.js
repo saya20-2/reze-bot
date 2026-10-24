@@ -5,8 +5,6 @@ const {
     StringSelectMenuBuilder,
     ComponentType
 } = require('discord.js');
-
-// Switch to 'ytmsearch:' to search YouTube Music (usually cleaner studio versions) instead
 const SEARCH_PREFIX = 'ytsearch:';
 const MAX_RESULTS = 10;
 const SELECT_TIMEOUT_MS = 60_000;
@@ -45,6 +43,9 @@ module.exports = {
 
         const lavalink = interaction.client.lavalinkManager;
         const node = lavalink.shoukaku.nodes.values().next().value;
+        if (!node) {
+            return interaction.editReply('*Static...* I’m not connected to the music server right now, try again in a moment!');
+        }
 
         let tracks;
         try {
@@ -56,7 +57,7 @@ module.exports = {
             tracks = res.loadType === 'search' ? res.data.slice(0, MAX_RESULTS) : [];
         } catch (error) {
             console.error('Search command error:', error);
-            return interaction.editReply('This song doesnt exist in Madokamis universe..');
+            return interaction.editReply('Madokami hasnt blessed us trying to search for that.');
         }
 
         if (tracks.length === 0) {
@@ -94,7 +95,7 @@ module.exports = {
                 time: SELECT_TIMEOUT_MS
             });
         } catch {
-            return interaction.editReply({ content: 'Search timed out, nothing was added.', embeds: [], components: [] });
+            return interaction.editReply({ content: ' Search timed out, nothing was added.', embeds: [], components: [] });
         }
 
         await selection.deferUpdate();

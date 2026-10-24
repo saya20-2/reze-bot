@@ -48,11 +48,12 @@ class LavalinkManager {
         }];
 
         const ShoukakuOptions = {
+            moveOnDisconnect: false,
             resume: true,
             resumeTimeout: 60,
             resumeByLibrary: true,
-            reconnectTries: 5,
-            reconnectInterval: 5000,
+            reconnectTries: Infinity,
+            reconnectInterval: 5,
         };
 
         this.shoukaku = new Shoukaku(new Connectors.DiscordJS(client), Nodes, ShoukakuOptions);
@@ -61,10 +62,10 @@ class LavalinkManager {
 
     initEvents() {
         this.shoukaku.on('error', (name, error) => console.error(`[Lavalink] Node ${name} Error:`, error));
-        this.shoukaku.on('ready', (name) => console.log(`[Lavalink] Node ${name} is ready!`));
+        this.shoukaku.on('ready', (name, resumed, resumedByLibrary) => console.log(`[Lavalink] Node ${name} is ready! (resumed: ${resumed}, players restored by library: ${resumedByLibrary})`));
+        this.shoukaku.on('reconnecting', (name, _left, interval) => console.warn(`[Lavalink] Node ${name} lost, retrying in ${interval}s...`));
         this.shoukaku.on('close', (name, code, reason) => console.warn(`[Lavalink] Node ${name} closed: ${reason || 'No reason'} (Code: ${code})`));
-
-        this.client.on('voiceStateUpdate', (oldState, newState) => this.handleVoiceStateUpdate(newState));
+        this.client.on('voiceStateUpdate', (_oldState, newState) => this.handleVoiceStateUpdate(newState));
     }
 
     getQueue(guildId) {
@@ -142,8 +143,6 @@ class LavalinkManager {
             }
         }
     }
-
-    // auto-disconnect 
 
     scheduleIdle(guildId) {
         if (this.idleTimers.has(guildId)) return;
