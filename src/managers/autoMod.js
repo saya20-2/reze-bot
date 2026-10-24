@@ -1,4 +1,4 @@
-const Tesseract = require("node-tesseract-ocr");
+const tesseract = require("node-tesseract-ocr");
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
@@ -32,6 +32,9 @@ class AutoModManager {
         const member = message.member;
         const accountAgeDays = (Date.now() - message.author.createdTimestamp) / (1000 * 60 * 60 * 24);
         const joinTimeMinutes = member ? (Date.now() - member.joinedTimestamp) / (1000 * 60) : 0;
+        const timeSinceJoined = member ? Date.now() - member.joinedTimestamp : 0;
+        const hasCustomRoles = member ? member.roles.cache.filter(r => r.id !== message.guild.id).size > 0 : false;
+        const isFreshJoin = timeSinceJoined <= (5 * 60 * 1000) && !hasCustomRoles;
 
         if (accountAgeDays < this.config.accountAgeDaysThreshold) {
             score += 2;
@@ -47,10 +50,17 @@ class AutoModManager {
             score += 1;
         }
 
-        const hasLink = /(https?:\/\/[^\s]+)/g.test(message.content);
-        if (hasLink) {
-            score += 1;
-            reasons.push('Contains Link');
+        const linkMatches = message.content.match(/(https?:\/\/[^\s]+)/gi);
+        const hasLink = linkMatches && linkMatches.length > 0;
+
+        const hasKeywordInLink = hasLink && linkMatches.some(link => 
+            this.config.spamKeywords.some(kw => link.toLowerCase().includes(kw))
+        );
+
+        if (isFreshJoin && hasLink && hasKeywordInLink) {
+            const reason = `New user posted link containing spam keyword within ${(timeSinceJoined / 60000).toFixed(1)} mins of joining`;
+            await this.executeBan(message, [reason]);
+            return;
         }
 
         if (message.mentions.everyone || message.mentionEveryone) {
