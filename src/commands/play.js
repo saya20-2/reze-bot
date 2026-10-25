@@ -19,6 +19,8 @@ module.exports = {
 
         const lavalink = interaction.client.lavalinkManager;
         const queue = lavalink.getQueue(interaction.guildId);
+        queue.textChannelId = interaction.channelId;
+        const maxMinutes = Math.round(lavalink.maxTrackMs / 60000);
         let player = lavalink.shoukaku.players.get(interaction.guildId);
 
         try {
@@ -49,17 +51,23 @@ module.exports = {
                 if (!tracks || !tracks.length) {
                     return interaction.editReply('Couldn’t extract tracks from that playlist!');
                 }
-
                 const selected = res.data.info?.selectedTrack ?? -1;
                 const startedMidway = selected > 0 && selected < tracks.length;
                 if (startedMidway) tracks = tracks.slice(selected);
+                const beforeFilter = tracks.length;
+                tracks = tracks.filter(t => !lavalink.isTooLong(t));
+                const tooLong = beforeFilter - tracks.length;
+                if (!tracks.length) {
+                    return interaction.editReply(`Every track in that playlist is longer than the ${maxMinutes} minute limit!`);
+                }
 
                 queue.addMultiple(tracks);
                 if (wasIdle) await lavalink.playNext(interaction.guildId);
 
                 return interaction.editReply(
                     `Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks into the queue!` +
-                    (startedMidway ? ' (Starting from the video in your link.)' : '')
+                    (startedMidway ? ' (Starting from the video in your link.)' : '') +
+                    (tooLong ? ` (${tooLong} skipped for being over ${maxMinutes} minutes.)` : '')
                 );
             }
 

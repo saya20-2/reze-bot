@@ -1,11 +1,16 @@
 const { Shoukaku, Connectors } = require('shoukaku');
 const DISCONNECT_TIMEOUT_MS = 30 * 60 * 1000;
+const EARLY_END_MS = 15000;
+const MAX_RESUME_ATTEMPTS = 2;
+const MIN_RESUME_PROGRESS_MS = 5000;
 
 class MusicQueue {
     constructor(guildId) {
         this.guildId = guildId;
         this.tracks = [];
         this.current = null;
+        this.retry = null; 
+        this.textChannelId = null; 
     }
 
     add(track) {
@@ -30,6 +35,7 @@ class MusicQueue {
     clear() {
         this.tracks = [];
         this.current = null;
+        this.retry = null;
     }
 }
 
@@ -40,6 +46,7 @@ class LavalinkManager {
         this.idleTimers = new Map(); 
         this.aloneTimers = new Map(); 
         this.disconnectTimeoutMs = DISCONNECT_TIMEOUT_MS;
+        this.failedTracks = new Map(); 
 
         const Nodes = [{
             name: process.env.LAVALINK_NAME || 'MainNode',
@@ -63,8 +70,9 @@ class LavalinkManager {
     initEvents() {
         this.shoukaku.on('error', (name, error) => console.error(`[Lavalink] Node ${name} Error:`, error));
         this.shoukaku.on('ready', (name, resumed, resumedByLibrary) => console.log(`[Lavalink] Node ${name} is ready! (resumed: ${resumed}, players restored by library: ${resumedByLibrary})`));
-        this.shoukaku.on('reconnecting', (name, _left, interval) => console.warn(`[Lavalink] Node ${name} lost, retrying in ${interval}s...`));
+        this.shoukaku.on('reconnecting', (name, _triesLeft, interval) => console.warn(`[Lavalink] Node ${name} lost, retrying in ${interval}s...`));
         this.shoukaku.on('close', (name, code, reason) => console.warn(`[Lavalink] Node ${name} closed: ${reason || 'No reason'} (Code: ${code})`));
+
         this.client.on('voiceStateUpdate', (_oldState, newState) => this.handleVoiceStateUpdate(newState));
     }
 
@@ -81,11 +89,16 @@ class LavalinkManager {
         player.on('start', () => this.clearIdle(guildId));
         player.on('end', async (event) => {
             const info = event.track?.info;
-            if ((event.reason === 'finished' || event.reason === 'loadFailed') && info && !info.isStream
-                && info.length - player.position > 15000) {
+            const finishedOrFailed = event.reason === 'finished' || event.reason === 'loadFailed';
+            const endedEarly = finishedOrFailed && info && !info.isStream
+                && info.length - player.position > EARLY_END_MS;
+
+            if (endedEarly) {
                 console.warn(`[Lavalink] Track ended early (${event.reason}) at ~${Math.round(player.position / 1000)}s of ${Math.round(info.length / 1000)}s: ${info.title}`);
+                if (await this.resumeTrack(guildId, player, event.track)) return;
             }
-            if (event.reason !== 'finished' && event.reason !== 'loadFailed') return;
+            if (!finishedOrFailed) return;
+            if (event.reason === 'loadFailed') this.reportFailure(guildId, info?.title);
             try {
                 await this.playNext(guildId);
             } catch (error) {
@@ -119,6 +132,7 @@ class LavalinkManager {
         }
 
         queue.current = next;
+        queue.retry = null;
         this.clearIdle(guildId);
         try {
             await player.playTrack({ track: { encoded: next.encoded } });
@@ -128,6 +142,54 @@ class LavalinkManager {
             throw error;
         }
         return next;
+    }
+
+    async resumeTrack(guildId, player, track) {
+        const queue = this.getQueue(guildId);
+        if (!queue.current || queue.current.encoded !== track.encoded) return false;
+        if (player.position < MIN_RESUME_PROGRESS_MS) return false;
+
+        const state = queue.retry?.encoded === track.encoded
+            ? queue.retry
+            : { encoded: track.encoded, count: 0, position: 0 };
+        if (state.count >= MAX_RESUME_ATTEMPTS) return false;
+        if (state.count > 0 && player.position - state.position < MIN_RESUME_PROGRESS_MS) return false;
+
+        state.count++;
+        state.position = player.position;
+        queue.retry = state;
+
+        try {
+            await player.playTrack({ track: { encoded: track.encoded }, position: Math.floor(player.position) });
+            console.log(`[Lavalink] Resuming "${track.info.title}" from ~${Math.round(player.position / 1000)}s (attempt ${state.count}/${MAX_RESUME_ATTEMPTS})`);
+            return true;
+        } catch (error) {
+            console.error('[Lavalink] Failed to resume track:', error);
+            return false;
+        }
+    }
+
+    reportFailure(guildId, title) {
+        const channelId = this.getQueue(guildId).textChannelId;
+        if (!channelId || !title) return;
+
+        let batch = this.failedTracks.get(guildId);
+        if (!batch) {
+            batch = { titles: [], timer: null };
+            this.failedTracks.set(guildId, batch);
+        }
+        batch.titles.push(title);
+        if (batch.timer) return;
+
+        batch.timer = setTimeout(() => {
+            this.failedTracks.delete(guildId);
+            const channel = this.client.channels.cache.get(channelId);
+            if (!channel?.send) return;
+            const shown = batch.titles.slice(0, 5).map(t => `**${t}**`).join(', ');
+            const more = batch.titles.length > 5 ? ` and ${batch.titles.length - 5} more` : '';
+            channel.send(`Couldn't play ${shown}${more}, skipping. YouTube refused or cut the stream (very long videos often fail).`)
+                .catch(() => {});
+        }, 3000);
     }
 
     async destroyPlayer(guildId) {
@@ -188,7 +250,6 @@ class LavalinkManager {
     handleVoiceStateUpdate(newState) {
         const guildId = newState.guild.id;
         if (!this.shoukaku.players.has(guildId)) return;
-
         if (newState.id === this.client.user.id && !newState.channelId) {
             this.destroyPlayer(guildId);
             return;
