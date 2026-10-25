@@ -1,4 +1,5 @@
 const { Shoukaku, Connectors } = require('shoukaku');
+const ytdlp = require('./Ytdlp');
 const DISCONNECT_TIMEOUT_MS = 30 * 60 * 1000;
 const EARLY_END_MS = 15000;
 const MAX_RESUME_ATTEMPTS = 2;
@@ -10,6 +11,7 @@ class MusicQueue {
         this.tracks = [];
         this.current = null;
         this.retry = null; 
+        this.playable = null; 
         this.textChannelId = null; 
     }
 
@@ -36,6 +38,7 @@ class MusicQueue {
         this.tracks = [];
         this.current = null;
         this.retry = null;
+        this.playable = null;
     }
 }
 
@@ -88,7 +91,10 @@ class LavalinkManager {
         this.scheduleIdle(guildId);
         player.on('start', () => this.clearIdle(guildId));
         player.on('end', async (event) => {
-            const info = event.track?.info;
+            const queue = this.getQueue(guildId);
+            const current = queue.current;
+            const isCurrent = current && (event.track?.encoded === queue.playable || event.track?.encoded === current.encoded);
+            const info = (isCurrent ? current : event.track)?.info;
             const finishedOrFailed = event.reason === 'finished' || event.reason === 'loadFailed';
             const endedEarly = finishedOrFailed && info && !info.isStream
                 && info.length - player.position > EARLY_END_MS;
@@ -133,25 +139,53 @@ class LavalinkManager {
 
         queue.current = next;
         queue.retry = null;
+        queue.playable = null;
         this.clearIdle(guildId);
         try {
-            await player.playTrack({ track: { encoded: next.encoded } });
+            const encoded = await this.getPlayableEncoded(player, next);
+            queue.playable = encoded;
+            await player.playTrack({ track: { encoded } });
         } catch (error) {
             queue.current = null;
+            queue.playable = null;
             this.scheduleIdle(guildId);
             throw error;
         }
+
+        const upcoming = queue.tracks[0];
+        if (upcoming?.info.sourceName === 'youtube' && !upcoming.info.isStream) ytdlp.prefetch(upcoming.info.uri, upcoming.info.identifier);
         return next;
+    }
+
+    async getPlayableEncoded(player, track) {
+        if (track.info.sourceName !== 'youtube' || track.info.isStream) return track.encoded;
+
+        try {
+            const file = await ytdlp.getAudioFile(track.info.uri, track.info.identifier);
+            if (file) {
+                const res = await player.node.rest.resolve(file);
+                if (res?.loadType === 'track') {
+                    console.log(`[Lavalink] Playing "${track.info.title}" via yt-dlp`);
+                    return res.data.encoded;
+                }
+                console.warn(`[yt-dlp] Lavalink could not load ${file} (${res?.loadType}). Is sources.local enabled in Lavalink and the folder readable by it? Using the YouTube plugin instead`);
+            }
+        } catch (error) {
+            console.warn(`[yt-dlp] ${track.info.title}: ${error.message}, using the YouTube plugin instead`);
+        }
+        console.log(`[Lavalink] Playing "${track.info.title}" via the YouTube plugin`);
+        return track.encoded;
     }
 
     async resumeTrack(guildId, player, track) {
         const queue = this.getQueue(guildId);
-        if (!queue.current || queue.current.encoded !== track.encoded) return false;
+        const encoded = queue.playable ?? queue.current?.encoded;
+        if (!queue.current || !encoded || encoded !== track.encoded) return false;
         if (player.position < MIN_RESUME_PROGRESS_MS) return false;
 
-        const state = queue.retry?.encoded === track.encoded
+        const state = queue.retry?.encoded === encoded
             ? queue.retry
-            : { encoded: track.encoded, count: 0, position: 0 };
+            : { encoded, count: 0, position: 0 };
         if (state.count >= MAX_RESUME_ATTEMPTS) return false;
         if (state.count > 0 && player.position - state.position < MIN_RESUME_PROGRESS_MS) return false;
 
@@ -160,8 +194,8 @@ class LavalinkManager {
         queue.retry = state;
 
         try {
-            await player.playTrack({ track: { encoded: track.encoded }, position: Math.floor(player.position) });
-            console.log(`[Lavalink] Resuming "${track.info.title}" from ~${Math.round(player.position / 1000)}s (attempt ${state.count}/${MAX_RESUME_ATTEMPTS})`);
+            await player.playTrack({ track: { encoded }, position: Math.floor(player.position) });
+            console.log(`[Lavalink] Resuming "${queue.current.info.title}" from ~${Math.round(player.position / 1000)}s (attempt ${state.count}/${MAX_RESUME_ATTEMPTS})`);
             return true;
         } catch (error) {
             console.error('[Lavalink] Failed to resume track:', error);
