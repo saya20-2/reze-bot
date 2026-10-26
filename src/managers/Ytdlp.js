@@ -1,4 +1,4 @@
-const { execFile } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -54,10 +54,30 @@ function findCached(id) {
     return file;
 }
 
-function download(id, videoUrl) {
+function parseNumber(value) {
+    const number = Number(value);
+    return value === 'NA' || !Number.isFinite(number) ? null : number;
+}
+
+function parseProgress(line) {
+    if (!line.startsWith('PROGRESS ')) return null;
+    const [, downloadedRaw, totalRaw, estimateRaw] = line.split(/\s+/);
+    const downloaded = parseNumber(downloadedRaw) ?? 0;
+    const total = parseNumber(totalRaw) ?? parseNumber(estimateRaw);
+    return {
+        stage: 'downloading',
+        downloaded,
+        total,
+        percent: total ? Math.min(100, (downloaded / total) * 100) : null,
+    };
+}
+
+function download(id, videoUrl, emit) {
     const args = [
         '-f', 'bestaudio[ext=webm]/bestaudio',
-        '--no-playlist', '--no-warnings', '--no-progress',
+        '--no-playlist', '--no-warnings',
+        '--quiet', '--progress', '--newline',
+        '--progress-template', 'download:PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s',
         '--max-filesize', MAX_FILESIZE,
         '--js-runtimes', JS_RUNTIME,
         '-o', path.join(CACHE_DIR, '%(id)s.%(ext)s'),
@@ -66,16 +86,44 @@ function download(id, videoUrl) {
     args.push('--', videoUrl);
 
     return new Promise((resolve, reject) => {
-        execFile(BIN, args, { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-            if (error) {
-                if (error.code === 'ENOENT') {
-                    missing = true;
-                    console.warn(`[yt-dlp] Binary "${BIN}" not found, YouTube playback stays on the plugin. Set YTDLP_PATH or install yt-dlp.`);
-                    return reject(new Error('yt-dlp not installed'));
-                }
-                const lastLine = String(stderr || error.message).trim().split('\n').pop();
-                return reject(new Error(error.killed ? 'yt-dlp timed out' : lastLine));
+        const child = spawn(BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdoutBuffer = '';
+        let stderr = '';
+        let timedOut = false;
+
+        const timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGKILL');
+        }, TIMEOUT_MS);
+
+        child.stdout.on('data', chunk => {
+            stdoutBuffer += chunk;
+            let newline;
+            while ((newline = stdoutBuffer.indexOf('\n')) >= 0) {
+                const progress = parseProgress(stdoutBuffer.slice(0, newline).trim());
+                stdoutBuffer = stdoutBuffer.slice(newline + 1);
+                if (progress) emit(progress);
             }
+        });
+
+        child.stderr.on('data', chunk => {
+            stderr = (stderr + chunk).slice(-20000);
+        });
+
+        child.on('error', error => {
+            clearTimeout(timer);
+            if (error.code === 'ENOENT') {
+                missing = true;
+                console.warn(`[yt-dlp] Binary "${BIN}" not found, YouTube playback stays on the plugin. Set YTDLP_PATH or install yt-dlp.`);
+                return reject(new Error('yt-dlp not installed'));
+            }
+            reject(error);
+        });
+
+        child.on('close', code => {
+            clearTimeout(timer);
+            if (timedOut) return reject(new Error('yt-dlp timed out'));
+            if (code !== 0) return reject(new Error(stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`));
             const file = findCached(id);
             if (!file) return reject(new Error('yt-dlp finished but no audio file was found'));
             resolve(file);
@@ -83,7 +131,7 @@ function download(id, videoUrl) {
     });
 }
 
-async function getAudioFile(videoUri, identifier) {
+async function getAudioFile(videoUri, identifier, onProgress) {
     if (DISABLED || missing) return null;
 
     const id = /^[\w-]{11}$/.test(identifier || '') ? identifier : videoIdFrom(videoUri);
@@ -97,19 +145,38 @@ async function getAudioFile(videoUri, identifier) {
         fs.utimesSync(cached, now, now);
         return cached;
     }
-    if (inflight.has(id)) return inflight.get(id);
 
-    const promise = (async () => {
+    const existing = inflight.get(id);
+    if (existing) {
+        if (onProgress) {
+            existing.listeners.add(onProgress);
+            if (existing.last) onProgress(existing.last);
+        }
+        return existing.promise;
+    }
+
+    const entry = { listeners: new Set(onProgress ? [onProgress] : []), last: null, promise: null };
+    const emit = progress => {
+        entry.last = progress;
+        for (const listener of entry.listeners) {
+            try {
+                listener(progress);
+            } catch {}
+        }
+    };
+
+    entry.promise = (async () => {
         await acquire();
         try {
-            return await download(id, videoUri);
+            emit({ stage: 'preparing' });
+            return await download(id, videoUri, emit);
         } finally {
             release();
             inflight.delete(id);
         }
     })();
-    inflight.set(id, promise);
-    return promise;
+    inflight.set(id, entry);
+    return entry.promise;
 }
 
 function prefetch(videoUri, identifier) {

@@ -1,5 +1,5 @@
 const LavalinkManager = require('./managers/lavalinkManager');
-const { Client, GatewayIntentBits, Partials, Collection, ActivityType } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection, ActivityType, MessageFlags } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
 const ModMailManager = require('./managers/modMail');
@@ -23,7 +23,7 @@ class MyBot extends Client {
 
         this.commands = new Collection();
         this.modmail = new ModMailManager(this);
-        this.modMailManager = new ModMailManager(this);
+        this.modMailManager = this.modmail;
         this.lavalinkManager = new LavalinkManager(this);
         this.autoMod = new AutoModManager(this);
         
@@ -60,6 +60,14 @@ class MyBot extends Client {
     setBotStatus(); 
     
     setInterval(setBotStatus, 3600000); 
+
+    let lastTick = Date.now();
+    setInterval(() => {
+        const now = Date.now();
+        const lag = now - lastTick - 1000;
+        lastTick = now;
+        if (lag > 500) console.warn(`[Loop] Event loop was blocked for ~${lag}ms`);
+    }, 1000).unref();
 });
 
     this.on('interactionCreate', async (interaction) => {
@@ -68,12 +76,21 @@ class MyBot extends Client {
         const command = this.commands.get(interaction.commandName);
         if (!command) return;
 
+        const age = Date.now() - interaction.createdTimestamp;
+        if (age > 1500 || age < 0) {
+            console.warn(`[Interaction] /${interaction.commandName} reached the handler ${age}ms after Discord created it (3000ms to acknowledge)`);
+        }
+
         try {
             await command.execute(interaction);
         } catch (error) {
+            if (error.code === 10062) {
+                console.error(`[Interaction] /${interaction.commandName} expired before it could be acknowledged (handler age ${age}ms)`);
+                return;
+            }
             console.error("Command Error:", error);
             if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ content: 'Command had an error, check syntax', ephemeral: true });
+                await interaction.reply({ content: 'Command had an error, check syntax', flags: MessageFlags.Ephemeral }).catch(() => {});
             }
         }
     });

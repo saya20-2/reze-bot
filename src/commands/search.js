@@ -1,3 +1,4 @@
+const { createProgressReporter } = require('../managers/downloadProgress');
 const {
     SlashCommandBuilder,
     EmbedBuilder,
@@ -120,7 +121,9 @@ module.exports = {
 
             const wasIdle = !queue.current;
             queue.add(track);
-            if (wasIdle) await lavalink.playNext(interaction.guildId);
+            const progress = createProgressReporter(content => interaction.editReply({ content, embeds: [], components: [] }));
+            if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report });
+            await progress.done();
 
             const line = `**[${track.info.title}](${track.info.uri})**`;
             return interaction.editReply({

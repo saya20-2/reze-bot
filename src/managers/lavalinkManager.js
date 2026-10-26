@@ -125,7 +125,7 @@ class LavalinkManager {
         });
     }
 
-    async playNext(guildId) {
+    async playNext(guildId, options = {}) {
         const queue = this.getQueue(guildId);
         const player = this.shoukaku.players.get(guildId);
         if (!player) return null;
@@ -142,7 +142,7 @@ class LavalinkManager {
         queue.playable = null;
         this.clearIdle(guildId);
         try {
-            const encoded = await this.getPlayableEncoded(player, next);
+            const encoded = await this.getPlayableEncoded(player, next, options.onProgress);
             queue.playable = encoded;
             await player.playTrack({ track: { encoded } });
         } catch (error) {
@@ -157,11 +157,11 @@ class LavalinkManager {
         return next;
     }
 
-    async getPlayableEncoded(player, track) {
+    async getPlayableEncoded(player, track, onProgress) {
         if (track.info.sourceName !== 'youtube' || track.info.isStream) return track.encoded;
 
         try {
-            const file = await ytdlp.getAudioFile(track.info.uri, track.info.identifier);
+            const file = await ytdlp.getAudioFile(track.info.uri, track.info.identifier, onProgress && (progress => onProgress({ ...progress, title: track.info.title })));
             if (file) {
                 const res = await player.node.rest.resolve(file);
                 if (res?.loadType === 'track') {
@@ -173,6 +173,7 @@ class LavalinkManager {
         } catch (error) {
             console.warn(`[yt-dlp] ${track.info.title}: ${error.message}, using the YouTube plugin instead`);
         }
+        if (onProgress) onProgress({ stage: 'fallback', title: track.info.title });
         console.log(`[Lavalink] Playing "${track.info.title}" via the YouTube plugin`);
         return track.encoded;
     }

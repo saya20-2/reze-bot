@@ -1,4 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
+const { createProgressReporter } = require('../managers/downloadProgress');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -33,6 +34,7 @@ module.exports = {
             }
 
             const wasIdle = !queue.current;
+            const progress = createProgressReporter(content => interaction.editReply(content));
             const isUrl = /^https?:\/\//i.test(query);
             const res = await player.node.rest.resolve(isUrl ? query : `ytsearch:${query}`);
 
@@ -44,7 +46,8 @@ module.exports = {
                 const tracks = res.data.tracks;
                 if (!tracks || !tracks.length) return interaction.editReply('Couldn’t extract tracks from playlist!');
                 queue.addMultiple(tracks);
-                if (wasIdle) await lavalink.playNext(interaction.guildId);
+                if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report });
+                await progress.done();
                 return interaction.editReply(`Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks!`);
             }
 
@@ -56,7 +59,8 @@ module.exports = {
             queue.add(trackToPlay);
 
             if (wasIdle) {
-                await lavalink.playNext(interaction.guildId);
+                await lavalink.playNext(interaction.guildId, { onProgress: progress.report });
+                await progress.done();
                 return interaction.editReply(`Now playing: **[${trackToPlay.info.title}](${trackToPlay.info.uri})**`);
             }
 
