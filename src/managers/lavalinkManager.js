@@ -12,7 +12,9 @@ class MusicQueue {
         this.current = null;
         this.retry = null; 
         this.playable = null; 
-        this.textChannelId = null; 
+        this.textChannelId = null;
+        this.nowPlayingMessage = null;
+        this.prefetchTrackId = null;
     }
 
     add(track) {
@@ -39,6 +41,9 @@ class MusicQueue {
         this.current = null;
         this.retry = null;
         this.playable = null;
+        this.nowPlayingMessage = null;
+        this.nowPlayingTrackId = null;
+        this.prefetchTrackId = null;
     }
 }
 
@@ -145,6 +150,12 @@ class LavalinkManager {
             const encoded = await this.getPlayableEncoded(player, next, options.onProgress);
             queue.playable = encoded;
             await player.playTrack({ track: { encoded } });
+            if (queue.nowPlayingMessage?.edit) {
+                queue.nowPlayingTrackId = next.info.identifier || next.info.uri;
+                await queue.nowPlayingMessage.edit({
+                    content: `Now playing: **[${next.info.title}](${next.info.uri})**`
+                }).catch(() => {});
+            }
         } catch (error) {
             queue.current = null;
             queue.playable = null;
@@ -153,8 +164,71 @@ class LavalinkManager {
         }
 
         const upcoming = queue.tracks[0];
-        if (upcoming?.info.sourceName === 'youtube' && !upcoming.info.isStream) ytdlp.prefetch(upcoming.info.uri, upcoming.info.identifier);
+        if (upcoming?.info.sourceName === 'youtube' && !upcoming.info.isStream) {
+            this.prefetchNext(guildId, upcoming);
+        }
         return next;
+    }
+
+    getGuildEmoji(guildId, name) {
+        const guild = this.client.guilds.cache.get(guildId);
+        const emoji = guild?.emojis.cache.find(item => item.name === name);
+        return emoji ? `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>` : `:${name}:`;
+    }
+
+    async updatePrefetchMessage(guildId, track, progress) {
+        const queue = this.getQueue(guildId);
+        const message = queue.nowPlayingMessage;
+        if (!message?.edit) return;
+        const currentTrackId = queue.current?.info?.identifier || queue.current?.info?.uri;
+        if (currentTrackId !== queue.nowPlayingTrackId) return;
+
+        if (progress.stage === 'failed' || progress.stage === 'fallback') {
+            // Keep the current now-playing message intact if prefetch fails.
+            return;
+        }
+
+        const downloading = progress.stage !== 'complete';
+        const emoji = this.getGuildEmoji(
+            guildId,
+            downloading ? 'Mad_oka' : 'MadoVibing_MM'
+        );
+        const percent = progress.percent == null
+            ? null
+            : Math.max(0, Math.min(100, progress.percent));
+        const width = 18;
+        const filled = percent == null ? 0 : Math.round(percent / 100 * width);
+        const bar = percent == null
+            ? '`' + '░'.repeat(width) + '`'
+            : '`' + '█'.repeat(filled) + '░'.repeat(width - filled) + '`';
+        const progressText = percent == null
+            ? `${bar} — preparing download`
+            : `${bar} ${Math.floor(percent)}%`;
+
+        const nowPlaying = `Now playing: **[${queue.current.info.title}](${queue.current.info.uri})**`;
+        const nextDownload = `\n\n${emoji} **Next song download:** [${track.info.title}](${track.info.uri})\n${progressText}`;
+
+        try {
+            await message.edit({ content: nowPlaying + nextDownload });
+        } catch (error) {
+            if (error.code !== 10008) {
+                console.warn('[yt-dlp] Could not update now-playing progress:', error.message);
+            }
+        }
+    }
+
+    prefetchNext(guildId, track) {
+        const queue = this.getQueue(guildId);
+        const currentId = queue.current?.info?.identifier;
+        const prefetchKey = `${currentId || 'none'}:${track.info.identifier || track.info.uri}`;
+        if (queue.prefetchTrackId === prefetchKey) return;
+        queue.prefetchTrackId = prefetchKey;
+
+        ytdlp.prefetch(
+            track.info.uri,
+            track.info.identifier,
+            progress => this.updatePrefetchMessage(guildId, track, progress)
+        );
     }
 
     async getPlayableEncoded(player, track, onProgress) {

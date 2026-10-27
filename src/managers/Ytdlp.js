@@ -126,6 +126,7 @@ function download(id, videoUrl, emit) {
             if (code !== 0) return reject(new Error(stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`));
             const file = findCached(id);
             if (!file) return reject(new Error('yt-dlp finished but no audio file was found'));
+            emit({ stage: 'complete', downloaded: fs.statSync(file).size, total: fs.statSync(file).size, percent: 100 });
             resolve(file);
         });
     });
@@ -179,8 +180,13 @@ async function getAudioFile(videoUri, identifier, onProgress) {
     return entry.promise;
 }
 
-function prefetch(videoUri, identifier) {
-    getAudioFile(videoUri, identifier).catch(() => {});
+function prefetch(videoUri, identifier, onProgress) {
+    getAudioFile(videoUri, identifier, onProgress).catch(error => {
+        console.warn(`[yt-dlp] Prefetch failed: ${error.message}`);
+        if (onProgress) {
+            try { onProgress({ stage: 'failed' }); } catch {}
+        }
+    });
 }
 
 function cleanup() {

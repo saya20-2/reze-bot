@@ -126,11 +126,16 @@ module.exports = {
             await progress.done();
 
             const line = `**[${track.info.title}](${track.info.uri})**`;
-            return interaction.editReply({
+            const reply = await interaction.editReply({
                 content: wasIdle ? `Now playing: ${line}` : `Added to queue: ${line}`,
                 embeds: [],
                 components: []
             });
+            if (wasIdle) {
+                queue.nowPlayingMessage = reply;
+                queue.nowPlayingTrackId = track.info.identifier || track.info.uri;
+            }
+            return reply;
         } catch (error) {
             console.error('Search select error:', error);
             return interaction.editReply({ content: 'Madokami hasnt blessed us trying to play that track.', embeds: [], components: [] });

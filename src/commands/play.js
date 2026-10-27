@@ -61,7 +61,10 @@ module.exports = {
             if (wasIdle) {
                 await lavalink.playNext(interaction.guildId, { onProgress: progress.report });
                 await progress.done();
-                return interaction.editReply(`Now playing: **[${trackToPlay.info.title}](${trackToPlay.info.uri})**`);
+                const reply = await interaction.editReply(`Now playing: **[${trackToPlay.info.title}](${trackToPlay.info.uri})**`);
+                queue.nowPlayingMessage = reply;
+                queue.nowPlayingTrackId = trackToPlay.info.identifier || trackToPlay.info.uri;
+                return reply;
             }
 
             return interaction.editReply(`Added to queue: **[${trackToPlay.info.title}](${trackToPlay.info.uri})**`);
