@@ -122,19 +122,14 @@ module.exports = {
             const wasIdle = !queue.current;
             queue.add(track);
             const progress = createProgressReporter(content => interaction.editReply({ content, embeds: [], components: [] }));
-            if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report });
+            if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
             await progress.done();
 
             const line = `**[${track.info.title}](${track.info.uri})**`;
-            const reply = await interaction.editReply({
-                content: wasIdle ? `Now playing: ${line}` : `Added to queue: ${line}`,
-                embeds: [],
-                components: []
-            });
-            if (wasIdle) {
-                queue.nowPlayingMessage = reply;
-                queue.nowPlayingTrackId = track.info.identifier || track.info.uri;
-            }
+            const content = wasIdle ? `Now playing: ${line}` : `Added to queue: ${line}`;
+            const reply = await interaction.editReply({ content, embeds: [], components: [] });
+            if (wasIdle) lavalink.setNowPlaying(interaction.guildId, reply, content);
+            else lavalink.refreshPrefetch(interaction.guildId);
             return reply;
         } catch (error) {
             console.error('Search select error:', error);

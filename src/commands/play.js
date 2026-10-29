@@ -46,9 +46,13 @@ module.exports = {
                 const tracks = res.data.tracks;
                 if (!tracks || !tracks.length) return interaction.editReply('Couldn’t extract tracks from playlist!');
                 queue.addMultiple(tracks);
-                if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report });
+                if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
                 await progress.done();
-                return interaction.editReply(`Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks!`);
+                const text = `Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks!`;
+                const reply = await interaction.editReply(text);
+                if (wasIdle) lavalink.setNowPlaying(interaction.guildId, reply, text);
+                else lavalink.refreshPrefetch(interaction.guildId);
+                return reply;
             }
 
             const trackToPlay = res.loadType === 'search' ? res.data[0] : res.data;
@@ -58,16 +62,20 @@ module.exports = {
 
             queue.add(trackToPlay);
 
+            const link = `**[${trackToPlay.info.title}](${trackToPlay.info.uri})**`;
+
             if (wasIdle) {
-                await lavalink.playNext(interaction.guildId, { onProgress: progress.report });
+                await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
                 await progress.done();
-                const reply = await interaction.editReply(`Now playing: **[${trackToPlay.info.title}](${trackToPlay.info.uri})**`);
-                queue.nowPlayingMessage = reply;
-                queue.nowPlayingTrackId = trackToPlay.info.identifier || trackToPlay.info.uri;
+                const text = `Now playing: ${link}`;
+                const reply = await interaction.editReply(text);
+                lavalink.setNowPlaying(interaction.guildId, reply, text);
                 return reply;
             }
 
-            return interaction.editReply(`Added to queue: **[${trackToPlay.info.title}](${trackToPlay.info.uri})**`);
+            const reply = await interaction.editReply(`Added to queue: ${link}`);
+            lavalink.refreshPrefetch(interaction.guildId);
+            return reply;
         } catch (error) {
             console.error('Play command error:', error);
             return interaction.editReply('Madokami hasnt blessed us trying to play that track.');

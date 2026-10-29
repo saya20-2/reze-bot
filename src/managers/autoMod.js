@@ -7,7 +7,10 @@ const sharp = require('sharp');
 
 const OCR_TIMEOUT_MS = 30000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const OCR_WIDTH = 2048;
+const MAX_PIXELS = 25_000_000;
+const OCR_SIZE = 3000;
+const MIN_USEFUL_TEXT_LENGTH = 20;
+const MAX_LOG_CHARS = 1800;
 
 class AutoModManager {
     constructor(client) {
@@ -36,12 +39,16 @@ class AutoModManager {
 
             const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
             if (channel && channel.isTextBased()) {
-                const lines = content.split('\n');
-                let output = `\`\`\`\n${content}\n\`\`\``;
+                // Discord rejects messages over 2000 characters, and raw OCR text easily exceeds that
+                let text = content.replace(/```/g, "'''");
+                if (text.length > MAX_LOG_CHARS) text = `${text.slice(0, MAX_LOG_CHARS)}\n[truncated]`;
+
+                const lines = text.split('\n');
+                let output = `\`\`\`\n${text}\n\`\`\``;
 
                 // Collapse in spoiler tags if it exceeds 10 lines to prevent clutter
                 if (lines.length > 10) {
-                    output = `|| \`\`\`\n${content}\n\`\`\` ||`;
+                    output = `|| \`\`\`\n${text}\n\`\`\` ||`;
                 }
 
                 await channel.send(output);
@@ -113,16 +120,16 @@ class AutoModManager {
                 const ocrText = await this.runOCR(attachment.url, () => score());
 
                 const traceLog = [
-                        `[AutoMod OCR Trace] User: ${message.author.tag} (${userId})`,
-                        `[AutoMod OCR Trace] Image URL: ${attachment.url}`,
-                        `[AutoMod OCR Trace] Raw Extracted Text:`,
-                        `--- START ---`,
-                        `${ocrText || '[NO TEXT DETECTED]'}`,
-                        `--- END ---`
-                    ].join('\n');
+                    `[AutoMod OCR Trace] User: ${message.author.tag} (${userId})`,
+                    `[AutoMod OCR Trace] Image URL: ${attachment.url}`,
+                    `[AutoMod OCR Trace] Raw Extracted Text:`,
+                    `--- START ---`,
+                    `${ocrText || '[NO TEXT DETECTED]'}`,
+                    `--- END ---`
+                ].join('\n');
 
-                    console.log(traceLog);
-                    await this.sendLog(message.guild, traceLog);
+                console.log(traceLog);
+                await this.sendLog(message.guild, traceLog);
 
                 addMatches(this.findKeywords(ocrText), 'image');
             }
@@ -190,204 +197,139 @@ class AutoModManager {
         });
     }
 
-    async ocrImage(imageUrl, currentScore) {
-        const response = await fetch(imageUrl, {
-            signal: AbortSignal.timeout(15000)
-        });
+    async downloadImage(imageUrl) {
+        const response = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
 
-    const thresholdedCrop = await sharp(crop)
-        .normalize()
-        .threshold(160)
-        .png()
-        .toBuffer();
+        if (!response.ok) {
+            throw new Error(`Image download failed (${response.status})`);
+        }
 
-    const thresholdedText = await this.recognize(
-        thresholdedCrop,
-        6
-    );
-
-    recordResult(
-        thresholdedText,
-        `${region.name}-thresholded`,
-        6
-    );
-
-    if (!response.ok) {
-        throw new Error(
-            `Image download failed (${response.status})`
-        );
-    }
-
-    const contentLength = Number(
-        response.headers.get('content-length') || 0
-    );
-
-    if (contentLength > MAX_IMAGE_BYTES) {
-        throw new Error('Image exceeds maximum allowed size');
-    }
-
-    const chunks = [];
-    let totalBytes = 0;
-
-    for await (const chunk of response.body) {
-        totalBytes += chunk.length;
-
-        if (totalBytes > MAX_IMAGE_BYTES) {
+        const contentLength = Number(response.headers.get('content-length') || 0);
+        if (contentLength > MAX_IMAGE_BYTES) {
             throw new Error('Image exceeds maximum allowed size');
         }
 
-        chunks.push(chunk);
-    }
+        const chunks = [];
+        let totalBytes = 0;
 
-    const buffer = Buffer.concat(chunks);
-
-    const maxPixels = 25_000_000;
-
-    const source = sharp(buffer, {
-        failOn: 'none',
-        limitInputPixels: maxPixels
-    }).rotate();
-
-    const metadata = await source.metadata();
-
-    if (!metadata.width || !metadata.height) {
-        throw new Error('Invalid image dimensions');
-    }
-
-    if (
-        metadata.width > 8192 ||
-        metadata.height > 8192 ||
-        metadata.width * metadata.height > maxPixels
-    ) {
-        throw new Error('Image dimensions exceed processing limits');
-    }
-
-    const prepared = await source.clone()
-        .flatten({ background: '#ffffff' })
-        .resize({
-            width: 3000,
-            height: 3000,
-            fit: 'inside',
-            withoutEnlargement: false,
-            kernel: 'lanczos3'
-        })
-        .grayscale()
-        .normalize()
-        .png()
-        .toBuffer();
-
-    const image = sharp(prepared);
-    const dimensions = await image.metadata();
-
-    const width = dimensions.width;
-    const height = dimensions.height;
-
-    const regions = [
-        {
-            name: 'full',
-            left: 0,
-            top: 0,
-            width,
-            height
-        }
-    ];
-
-    const halfWidth = Math.ceil(width * 0.55);
-    const halfHeight = Math.ceil(height * 0.55);
-
-    const x2 = width - halfWidth;
-    const y2 = height - halfHeight;
-
-    regions.push(
-        {
-            name: 'top-left',
-            left: 0,
-            top: 0,
-            width: halfWidth,
-            height: halfHeight
-        },
-        {
-            name: 'top-right',
-            left: x2,
-            top: 0,
-            width: halfWidth,
-            height: halfHeight
-        },
-        {
-            name: 'bottom-left',
-            left: 0,
-            top: y2,
-            width: halfWidth,
-            height: halfHeight
-        },
-        {
-            name: 'bottom-right',
-            left: x2,
-            top: y2,
-            width: halfWidth,
-            height: halfHeight
-        }
-    );
-
-    const results = [];
-    const detectedKeywords = new Map();
-
-    const recordResult = (text, region, psm) => {
-        if (!text) return;
-
-        results.push(text);
-
-        for (const [keyword, weight] of this.findKeywords(text)) {
-            detectedKeywords.set(keyword, weight);
+        for await (const chunk of response.body) {
+            totalBytes += chunk.length;
+            if (totalBytes > MAX_IMAGE_BYTES) {
+                throw new Error('Image exceeds maximum allowed size');
+            }
+            chunks.push(chunk);
         }
 
-        console.log(
-            `[AutoMod OCR] ${region}, PSM ${psm}: ` +
-            `${[...this.findKeywords(text).keys()].join(', ') || 'no keywords'}`
-        );
-    };
-
-    const scoreKeywords = () =>
-        [...detectedKeywords.values()]
-            .reduce((sum, weight) => sum + weight, 0);
-
-    const fullText = await this.recognize(prepared, 11);
-
-    recordResult(fullText, 'full', 11);
-
-    if (
-        currentScore() + scoreKeywords() >=
-        this.config.banScoreThreshold
-    ) {
-        return results.join('\n');
+        return Buffer.concat(chunks);
     }
 
-    for (const region of regions.slice(1)) {
-        const crop = await image.clone()
-            .extract({
-                left: region.left,
-                top: region.top,
-                width: region.width,
-                height: region.height
+    async ocrImage(imageUrl, currentScore) {
+        const buffer = await this.downloadImage(imageUrl);
+
+        const source = sharp(buffer, {
+            failOn: 'none',
+            limitInputPixels: MAX_PIXELS
+        }).rotate();
+
+        const metadata = await source.metadata();
+
+        if (!metadata.width || !metadata.height) {
+            throw new Error('Invalid image dimensions');
+        }
+
+        if (
+            metadata.width > 8192 ||
+            metadata.height > 8192 ||
+            metadata.width * metadata.height > MAX_PIXELS
+        ) {
+            throw new Error('Image dimensions exceed processing limits');
+        }
+
+        const prepared = await source.clone()
+            .flatten({ background: '#ffffff' })
+            .resize({
+                width: OCR_SIZE,
+                height: OCR_SIZE,
+                fit: 'inside',
+                withoutEnlargement: false,
+                kernel: 'lanczos3'
             })
+            .grayscale()
+            .normalize()
             .png()
             .toBuffer();
 
-        // PSM 6 assumes a coherent block of text.
-        const text = await this.recognize(crop, 6);
+        const image = sharp(prepared);
+        const dimensions = await image.metadata();
 
-        recordResult(text, region.name, 6);
+        const width = dimensions.width;
+        const height = dimensions.height;
 
-        if (
-            currentScore() + scoreKeywords() >=
-            this.config.banScoreThreshold
-        ) {
-            break;
+        const halfWidth = Math.ceil(width * 0.55);
+        const halfHeight = Math.ceil(height * 0.55);
+        const x2 = width - halfWidth;
+        const y2 = height - halfHeight;
+
+        const regions = [
+            { name: 'top-left', left: 0, top: 0, width: halfWidth, height: halfHeight },
+            { name: 'top-right', left: x2, top: 0, width: halfWidth, height: halfHeight },
+            { name: 'bottom-left', left: 0, top: y2, width: halfWidth, height: halfHeight },
+            { name: 'bottom-right', left: x2, top: y2, width: halfWidth, height: halfHeight }
+        ];
+
+        const results = [];
+        const detectedKeywords = new Map();
+
+        const recordResult = (text, region, psm) => {
+            if (!text) return;
+
+            results.push(text);
+
+            const found = this.findKeywords(text);
+            for (const [keyword, weight] of found) {
+                detectedKeywords.set(keyword, weight);
+            }
+
+            console.log(`[AutoMod OCR] ${region}, PSM ${psm}: ${[...found.keys()].join(', ') || 'no keywords'}`);
+        };
+
+        const isConclusive = () => {
+            const detected = [...detectedKeywords.values()].reduce((sum, weight) => sum + weight, 0);
+            return currentScore() + detected >= this.config.banScoreThreshold;
+        };
+
+        // Pass 1: the whole image, sparse text mode (screenshots, memes, text scattered around)
+        recordResult(await this.recognize(prepared, 11), 'full', 11);
+        if (isConclusive()) return results.join('\n');
+
+        // Pass 2: overlapping quadrants as blocks of text, stopping as soon as it is conclusive
+        for (const region of regions) {
+            const crop = await image.clone()
+                .extract({
+                    left: region.left,
+                    top: region.top,
+                    width: region.width,
+                    height: region.height
+                })
+                .png()
+                .toBuffer();
+
+            recordResult(await this.recognize(crop, 6), region.name, 6);
+            if (isConclusive()) return results.join('\n');
         }
-    }
 
-    return results.join('\n');
-}
+        // Last resort: if almost nothing was read, try a hard black/white version of the whole image
+        if (results.join('').trim().length < MIN_USEFUL_TEXT_LENGTH) {
+            const thresholded = await sharp(prepared)
+                .threshold(160)
+                .png()
+                .toBuffer();
+
+            recordResult(await this.recognize(thresholded, 6), 'full-thresholded', 6);
+        }
+
+        return results.join('\n');
+    }
 
     async recognize(buffer, psm) {
         const tempFilePath = path.join(os.tmpdir(), `automod_${crypto.randomUUID()}.png`);
@@ -411,7 +353,7 @@ class AutoModManager {
         try {
             const username = message.author.tag;
             await message.member.ban({
-                deleteMessageSeconds: 60 * 60 * 24, 
+                deleteMessageSeconds: 60 * 60 * 24,
                 reason: `AutoMod Ban: ${reasons.join(', ')}`
             });
 

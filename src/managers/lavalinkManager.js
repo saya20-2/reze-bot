@@ -1,9 +1,13 @@
 const { Shoukaku, Connectors } = require('shoukaku');
 const ytdlp = require('./Ytdlp');
+const { formatNextLine } = require('./downloadProgress');
 const DISCONNECT_TIMEOUT_MS = 30 * 60 * 1000;
 const EARLY_END_MS = 15000;
 const MAX_RESUME_ATTEMPTS = 2;
 const MIN_RESUME_PROGRESS_MS = 5000;
+const EMOTE_DOWNLOADING = 'Mad_oka';
+const EMOTE_DONE = 'MadoVibing_MM';
+const NOW_PLAYING_EDIT_INTERVAL_MS = 2000;
 
 class MusicQueue {
     constructor(guildId) {
@@ -13,8 +17,7 @@ class MusicQueue {
         this.retry = null; 
         this.playable = null; 
         this.textChannelId = null;
-        this.nowPlayingMessage = null;
-        this.prefetchTrackId = null;
+        this.nowPlaying = null; 
     }
 
     add(track) {
@@ -41,9 +44,7 @@ class MusicQueue {
         this.current = null;
         this.retry = null;
         this.playable = null;
-        this.nowPlayingMessage = null;
-        this.nowPlayingTrackId = null;
-        this.prefetchTrackId = null;
+        this.nowPlaying = null;
     }
 }
 
@@ -138,9 +139,12 @@ class LavalinkManager {
         const next = queue.tracks.shift();
         if (!next) {
             queue.current = null;
+            this.detachNowPlaying(guildId);
             this.scheduleIdle(guildId);
             return null;
         }
+
+        if (options.silent) this.detachNowPlaying(guildId);
 
         queue.current = next;
         queue.retry = null;
@@ -150,12 +154,6 @@ class LavalinkManager {
             const encoded = await this.getPlayableEncoded(player, next, options.onProgress);
             queue.playable = encoded;
             await player.playTrack({ track: { encoded } });
-            if (queue.nowPlayingMessage?.edit) {
-                queue.nowPlayingTrackId = next.info.identifier || next.info.uri;
-                await queue.nowPlayingMessage.edit({
-                    content: `Now playing: **[${next.info.title}](${next.info.uri})**`
-                }).catch(() => {});
-            }
         } catch (error) {
             queue.current = null;
             queue.playable = null;
@@ -163,72 +161,114 @@ class LavalinkManager {
             throw error;
         }
 
-        const upcoming = queue.tracks[0];
-        if (upcoming?.info.sourceName === 'youtube' && !upcoming.info.isStream) {
-            this.prefetchNext(guildId, upcoming);
+        // Songs that start on their own keep editing the same "Now playing" message
+        if (!options.silent && queue.nowPlaying) {
+            const np = queue.nowPlaying;
+            np.base = `Now playing: **[${next.info.title}](${next.info.uri})**`;
+            np.line = null;
+            np.stage = null;
+            this.sendNowPlayingEdit(guildId, np);
         }
+
+        this.refreshPrefetch(guildId);
         return next;
     }
 
-    getGuildEmoji(guildId, name) {
-        const guild = this.client.guilds.cache.get(guildId);
-        const emoji = guild?.emojis.cache.find(item => item.name === name);
-        return emoji ? `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>` : `:${name}:`;
+    emoteFor(guildId, name) {
+        const wanted = name.toLowerCase();
+        const matches = emoji => emoji.name?.toLowerCase() === wanted;
+        const emoji = this.client.guilds?.cache.get(guildId)?.emojis?.cache.find(matches) ?? this.client.emojis?.cache.find(matches);
+        return emoji ? emoji.toString() : '';
     }
 
-    async updatePrefetchMessage(guildId, track, progress) {
+    setNowPlaying(guildId, message, base) {
+        if (!message?.id) return;
         const queue = this.getQueue(guildId);
-        const message = queue.nowPlayingMessage;
-        if (!message?.edit) return;
-        const currentTrackId = queue.current?.info?.identifier || queue.current?.info?.uri;
-        if (currentTrackId !== queue.nowPlayingTrackId) return;
+        queue.nowPlaying = {
+            channelId: message.channelId,
+            messageId: message.id,
+            base,
+            line: null,
+            stage: null,
+            lastContent: base,
+            lastEdit: 0,
+            pending: Promise.resolve(),
+        };
+        this.refreshPrefetch(guildId);
+    }
 
-        if (progress.stage === 'failed' || progress.stage === 'fallback') {
-            // Keep the current now-playing message intact if prefetch fails.
+    detachNowPlaying(guildId) {
+        const queue = this.getQueue(guildId);
+        const np = queue.nowPlaying;
+        if (!np) return;
+        queue.nowPlaying = null;
+        if (np.line) {
+            np.line = null;
+            this.sendNowPlayingEdit(guildId, np);
+        }
+    }
+
+    sendNowPlayingEdit(guildId, np) {
+        np.pending = np.pending.then(async () => {
+            const content = np.base + (np.line ? `\n${np.line}` : '');
+            if (content === np.lastContent) return;
+            np.lastContent = content;
+            np.lastEdit = Date.now();
+            try {
+                const channel = await this.client.channels.fetch(np.channelId);
+                await channel.messages.edit(np.messageId, { content });
+            } catch (error) {
+                if (error.code === 10008 || error.code === 10003) {
+                    const queue = this.getQueue(guildId);
+                    if (queue.nowPlaying === np) queue.nowPlaying = null;
+                } else {
+                    console.warn(`[Lavalink] Could not edit the now-playing message: ${error.message}`);
+                }
+            }
+        }).catch(() => {});
+    }
+
+    updateNextLine(guildId, np, line, stage) {
+        np.line = line;
+        const stageChanged = np.stage !== stage;
+        np.stage = stage;
+        if (!stageChanged && Date.now() - np.lastEdit < NOW_PLAYING_EDIT_INTERVAL_MS) return;
+        this.sendNowPlayingEdit(guildId, np);
+    }
+
+    // Download the first upcoming song ahead of time and show its progress under "Now playing"
+    refreshPrefetch(guildId) {
+        const queue = this.getQueue(guildId);
+        const np = queue.nowPlaying;
+        const upcoming = queue.tracks[0];
+        const downloadable = upcoming && upcoming.info.sourceName === 'youtube' && !upcoming.info.isStream;
+
+        const clearLine = () => {
+            if (np && queue.nowPlaying === np && queue.tracks[0] === upcoming && np.line) {
+                np.line = null;
+                np.stage = null;
+                this.sendNowPlayingEdit(guildId, np);
+            }
+        };
+
+        if (!downloadable) {
+            if (np && np.line) {
+                np.line = null;
+                np.stage = null;
+                this.sendNowPlayingEdit(guildId, np);
+            }
             return;
         }
 
-        const downloading = progress.stage !== 'complete';
-        const emoji = this.getGuildEmoji(
-            guildId,
-            downloading ? 'Mad_oka' : 'MadoVibing_MM'
-        );
-        const percent = progress.percent == null
-            ? null
-            : Math.max(0, Math.min(100, progress.percent));
-        const width = 18;
-        const filled = percent == null ? 0 : Math.round(percent / 100 * width);
-        const bar = percent == null
-            ? '`' + '░'.repeat(width) + '`'
-            : '`' + '█'.repeat(filled) + '░'.repeat(width - filled) + '`';
-        const progressText = percent == null
-            ? `${bar} — preparing download`
-            : `${bar} ${Math.floor(percent)}%`;
+        const onProgress = np && (progress => {
+            if (queue.nowPlaying !== np || queue.tracks[0] !== upcoming) return;
+            const emote = this.emoteFor(guildId, progress.stage === 'done' ? EMOTE_DONE : EMOTE_DOWNLOADING);
+            this.updateNextLine(guildId, np, formatNextLine(progress, upcoming.info.title, emote), progress.stage);
+        });
 
-        const nowPlaying = `Now playing: **[${queue.current.info.title}](${queue.current.info.uri})**`;
-        const nextDownload = `\n\n${emoji} **Next song download:** [${track.info.title}](${track.info.uri})\n${progressText}`;
-
-        try {
-            await message.edit({ content: nowPlaying + nextDownload });
-        } catch (error) {
-            if (error.code !== 10008) {
-                console.warn('[yt-dlp] Could not update now-playing progress:', error.message);
-            }
-        }
-    }
-
-    prefetchNext(guildId, track) {
-        const queue = this.getQueue(guildId);
-        const currentId = queue.current?.info?.identifier;
-        const prefetchKey = `${currentId || 'none'}:${track.info.identifier || track.info.uri}`;
-        if (queue.prefetchTrackId === prefetchKey) return;
-        queue.prefetchTrackId = prefetchKey;
-
-        ytdlp.prefetch(
-            track.info.uri,
-            track.info.identifier,
-            progress => this.updatePrefetchMessage(guildId, track, progress)
-        );
+        ytdlp.getAudioFile(upcoming.info.uri, upcoming.info.identifier, onProgress)
+            .then(file => { if (!file) clearLine(); })
+            .catch(() => clearLine());
     }
 
     async getPlayableEncoded(player, track, onProgress) {
@@ -296,7 +336,7 @@ class LavalinkManager {
             if (!channel?.send) return;
             const shown = batch.titles.slice(0, 5).map(t => `**${t}**`).join(', ');
             const more = batch.titles.length > 5 ? ` and ${batch.titles.length - 5} more` : '';
-            channel.send(`Couldn't play ${shown}${more}, skipping. YouTube refused or cut the stream (very long videos often fail).`)
+            channel.send(`Video ${shown}${more} was too long for Reze :(`)
                 .catch(() => {});
         }, 3000);
     }
@@ -304,6 +344,7 @@ class LavalinkManager {
     async destroyPlayer(guildId) {
         this.clearIdle(guildId);
         this.clearAlone(guildId);
+        this.detachNowPlaying(guildId);
         this.getQueue(guildId).clear();
 
         if (this.shoukaku.players.has(guildId) || this.shoukaku.connections.has(guildId)) {

@@ -22,6 +22,25 @@ function format(progress) {
     return `Preparing ${title}...`;
 }
 
+function bar(percent) {
+    const filled = Math.round((percent / 100) * BAR_WIDTH);
+    return '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled);
+}
+
+function formatNextLine(progress, title, emote) {
+    const prefix = emote ? `${emote} ` : '';
+    const head = `${prefix}Next up: **${title}**`;
+
+    if (progress.stage === 'done') {
+        return `${head}\n\`${bar(100)}\` 100% (${megabytes(progress.downloaded)} MB)`;
+    }
+    if (progress.stage === 'downloading') {
+        if (progress.percent == null) return `${head}\n${megabytes(progress.downloaded)} MB so far...`;
+        return `${head}\n\`${bar(progress.percent)}\` ${Math.floor(progress.percent)}% (${megabytes(progress.downloaded)} / ${megabytes(progress.total)} MB)`;
+    }
+    return `${head}\n\`${bar(0)}\` 0%`;
+}
+
 function createProgressReporter(editFn) {
     let lastEdit = 0;
     let lastStage = null;
@@ -29,7 +48,7 @@ function createProgressReporter(editFn) {
     let pending = Promise.resolve();
 
     function report(progress) {
-        if (finished) return;
+        if (finished || progress.stage === 'done') return;
         const now = Date.now();
         const important = progress.stage !== 'downloading' || lastStage !== 'downloading';
         if (!important && now - lastEdit < MIN_EDIT_INTERVAL_MS) return;
@@ -46,4 +65,4 @@ function createProgressReporter(editFn) {
     return { report, done };
 }
 
-module.exports = { createProgressReporter, format };
+module.exports = { createProgressReporter, format, formatNextLine };
