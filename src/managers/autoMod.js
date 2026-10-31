@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const sharp = require('sharp');
+const { PermissionFlagsBits } = require('discord.js');
 
 const OCR_TIMEOUT_MS = 30000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -11,6 +12,7 @@ const MAX_PIXELS = 25_000_000;
 const OCR_SIZE = 3000;
 const MIN_USEFUL_TEXT_LENGTH = 20;
 const MAX_LOG_CHARS = 1800;
+const VERBOSE = process.env.AUTOMOD_DEBUG === 'true';
 
 class AutoModManager {
     constructor(client) {
@@ -18,6 +20,7 @@ class AutoModManager {
         this.userMessageCounts = new Map();
         this.userLinkTracker = new Map();
         this.ocrChain = Promise.resolve();
+        this.pendingOcr = 0;
 
         this.config = {
             accountAgeDaysThreshold: 3,
@@ -26,6 +29,13 @@ class AutoModManager {
             specificKeywords: ['mrbeast', 'giveaway', 'giving away', 'promo code', 'crypto casino', 'claim your reward', 'click the link', 'usdt', 'nitro'],
             genericKeywords: ['bonus', 'activate', 'claim', 'free', 'withdraw'],
             keywordAliases: { mrbeast: ['mbeast'] },
+            darkImage: { sampleSize: 96, darkPixelLevel: 70, minDarkFraction: 0.55, maxMeanLuminance: 90 },
+            establishedScoreThreshold: 6,
+            establishedMinSpecificKeywords: 2,
+            establishedAccountAction: 'timeout',
+            establishedTimeoutMinutes: 24 * 60,
+            maxPendingOcrJobs: 8,
+            exemptRoleIds: (process.env.AUTOMOD_EXEMPT_ROLE_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
             linkSpamChannelThreshold: 3,
             linkSpamWindowMs: 5 * 60 * 1000,
             tesseractBinary: process.env.TESSERACT_BINARY || 'tesseract'
@@ -111,16 +121,42 @@ class AutoModManager {
 
         const score = () => [...matched.values()].reduce((sum, weight) => sum + weight, 0);
 
-        if (isNewOrRecent && message.attachments.size > 0) {
+        // Would the keywords found so far (plus `extra`) be enough to act on this account?
+        const evaluate = (extra = new Map()) => {
+            const all = new Map([...matched, ...extra]);
+            const total = [...all.values()].reduce((sum, weight) => sum + weight, 0);
+            if (isNewOrRecent) return total >= this.config.banScoreThreshold;
+            const specific = [...all.keys()].filter(keyword => this.config.specificKeywords.includes(keyword)).length;
+            return total >= this.config.establishedScoreThreshold && specific >= this.config.establishedMinSpecificKeywords;
+        };
+
+        if (message.attachments.size > 0 && message.member) {
             for (const [, attachment] of message.attachments) {
                 if (!this.isImage(attachment.contentType)) continue;
                 if (attachment.size > MAX_IMAGE_BYTES) continue;
-                if (score() >= this.config.banScoreThreshold) break;
+                if (evaluate()) break;
 
-                const ocrText = await this.runOCR(attachment.url, () => score());
+                let buffer;
+                try {
+                    buffer = await this.downloadImage(attachment.url);
+                } catch (error) {
+                    console.error('[AutoMod] Image download error:', error.message);
+                    continue;
+                }
+
+                const imageStats = await this.analyzeImage(buffer).catch(() => null);
+                const darkScreenshot = imageStats ? this.looksLikeDarkScreenshot(imageStats) : false;
+
+                if (!darkScreenshot) {
+                    if (VERBOSE && imageStats) console.log(`[AutoMod] Skipped image from ${message.author.tag}: not a dark screenshot (mean ${imageStats.mean.toFixed(0)}, dark ${imageStats.darkFraction.toFixed(2)})`);
+                    continue;
+                }
+
+                const ocrText = await this.runOCR(buffer, evaluate);
+                const found = this.findKeywords(ocrText);
 
                 const traceLog = [
-                    `[AutoMod OCR Trace] User: ${message.author.tag} (${userId})`,
+                    `[AutoMod OCR Trace] User: ${message.author.tag} (${userId})${isNewOrRecent ? '' : ' [established account]'}`,
                     `[AutoMod OCR Trace] Image URL: ${attachment.url}`,
                     `[AutoMod OCR Trace] Raw Extracted Text:`,
                     `--- START ---`,
@@ -128,27 +164,41 @@ class AutoModManager {
                     `--- END ---`
                 ].join('\n');
 
-                console.log(traceLog);
-                await this.sendLog(message.guild, traceLog);
+                // Dark images are common (game screenshots, dark mode), so stay quiet unless a keyword matched
+                if (found.size > 0 || VERBOSE) {
+                    console.log(traceLog);
+                    await this.sendLog(message.guild, traceLog);
+                } else {
+                    console.log(`[AutoMod] Scanned a dark image from ${message.author.tag}: no keywords`);
+                }
 
-                addMatches(this.findKeywords(ocrText), 'image');
+                addMatches(found, 'image');
             }
         }
 
-        const hasSpamCriteria = score() >= this.config.banScoreThreshold || hasMassMention;
+        const hasSpamCriteria = evaluate() || (isNewOrRecent && hasMassMention);
 
-        if (isNewOrRecent && hasSpamCriteria) {
+        if (hasSpamCriteria) {
             const reasons = [];
-            if (accountAgeDays < this.config.accountAgeDaysThreshold) {
-                reasons.push(`New Account (${accountAgeDays.toFixed(1)} days old)`);
+            if (isNewOrRecent) {
+                if (accountAgeDays < this.config.accountAgeDaysThreshold) {
+                    reasons.push(`New Account (${accountAgeDays.toFixed(1)} days old)`);
+                } else {
+                    reasons.push(`Recent Join (${joinTimeMinutes.toFixed(1)} mins ago)`);
+                }
             } else {
-                reasons.push(`Recent Join (${joinTimeMinutes.toFixed(1)} mins ago)`);
+                reasons.push(`Established account (${accountAgeDays.toFixed(0)} days old), possibly compromised`);
             }
             if (matched.size > 0) {
                 reasons.push(`Spam Keywords [${[...matched.keys()].join(', ')}] in ${[...sources].join('/')}, score ${score()}`);
             }
-            if (hasMassMention) reasons.push('Mass Mention (@everyone/@here)');
-            await this.executeBan(message, reasons);
+            if (isNewOrRecent && hasMassMention) reasons.push('Mass Mention (@everyone/@here)');
+
+            if (isNewOrRecent) {
+                await this.executeBan(message, reasons);
+            } else {
+                await this.handleEstablishedSpam(message, reasons);
+            }
             return;
         }
 
@@ -188,13 +238,45 @@ class AutoModManager {
         }
     }
 
-    runOCR(imageUrl, currentScore) {
-        const job = this.ocrChain.then(() => this.ocrImage(imageUrl, currentScore));
+    runOCR(buffer, evaluate) {
+        if (this.pendingOcr >= this.config.maxPendingOcrJobs) {
+            console.warn('[AutoMod] OCR backlog is full, skipping this image');
+            return Promise.resolve(null);
+        }
+
+        this.pendingOcr++;
+        const job = this.ocrChain.then(() => this.ocrImage(buffer, evaluate));
         this.ocrChain = job.catch(() => {});
-        return job.catch(error => {
-            console.error('[AutoMod] Native OCR Error:', error);
-            return null;
-        });
+        return job
+            .catch(error => {
+                console.error('[AutoMod] Native OCR Error:', error);
+                return null;
+            })
+            .finally(() => { this.pendingOcr--; });
+    }
+
+    async analyzeImage(buffer) {
+        const { sampleSize, darkPixelLevel } = this.config.darkImage;
+        const { data } = await sharp(buffer, { failOn: 'none', limitInputPixels: MAX_PIXELS })
+            .rotate()
+            .flatten({ background: '#ffffff' })
+            .resize(sampleSize, sampleSize, { fit: 'inside' })
+            .grayscale()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+
+        let sum = 0;
+        let dark = 0;
+        for (const value of data) {
+            sum += value;
+            if (value < darkPixelLevel) dark++;
+        }
+        return { mean: sum / data.length, darkFraction: dark / data.length };
+    }
+
+    looksLikeDarkScreenshot(stats) {
+        const { minDarkFraction, maxMeanLuminance } = this.config.darkImage;
+        return stats.darkFraction >= minDarkFraction && stats.mean <= maxMeanLuminance;
     }
 
     async downloadImage(imageUrl) {
@@ -223,9 +305,7 @@ class AutoModManager {
         return Buffer.concat(chunks);
     }
 
-    async ocrImage(imageUrl, currentScore) {
-        const buffer = await this.downloadImage(imageUrl);
-
+    async ocrImage(buffer, evaluate) {
         const source = sharp(buffer, {
             failOn: 'none',
             limitInputPixels: MAX_PIXELS
@@ -290,13 +370,12 @@ class AutoModManager {
                 detectedKeywords.set(keyword, weight);
             }
 
-            console.log(`[AutoMod OCR] ${region}, PSM ${psm}: ${[...found.keys()].join(', ') || 'no keywords'}`);
+            if (found.size > 0 || VERBOSE) {
+                console.log(`[AutoMod OCR] ${region}, PSM ${psm}: ${[...found.keys()].join(', ') || 'no keywords'}`);
+            }
         };
 
-        const isConclusive = () => {
-            const detected = [...detectedKeywords.values()].reduce((sum, weight) => sum + weight, 0);
-            return currentScore() + detected >= this.config.banScoreThreshold;
-        };
+        const isConclusive = () => evaluate(detectedKeywords);
 
         // Pass 1: the whole image, sparse text mode (screenshots, memes, text scattered around)
         recordResult(await this.recognize(prepared, 11), 'full', 11);
@@ -342,6 +421,48 @@ class AutoModManager {
             ]);
         } finally {
             await fs.unlink(tempFilePath).catch(() => {});
+        }
+    }
+
+    isExempt(member) {
+        if (!member) return false;
+        const exemptPermissions = [
+            PermissionFlagsBits.Administrator,
+            PermissionFlagsBits.ManageMessages,
+            PermissionFlagsBits.ModerateMembers,
+            PermissionFlagsBits.BanMembers
+        ];
+        if (exemptPermissions.some(permission => member.permissions?.has(permission))) return true;
+        return this.config.exemptRoleIds.length > 0 && !!member.roles?.cache?.some(role => this.config.exemptRoleIds.includes(role.id));
+    }
+
+    async handleEstablishedSpam(message, reasons) {
+        const member = message.member;
+        const summary = `[AutoMod] Spam from established account ${message.author.tag} (${message.author.id}): ${reasons.join(', ')}`;
+
+        if (!member) return;
+
+        if (this.isExempt(member)) {
+            console.log(`${summary} [exempt, no action taken]`);
+            await this.sendLog(message.guild, `${summary} [exempt, no action taken]`);
+            return;
+        }
+
+        await message.delete().catch(() => {});
+
+        if (this.config.establishedAccountAction === 'ban') {
+            await this.executeBan(message, reasons);
+            return;
+        }
+
+        try {
+            await member.timeout(this.config.establishedTimeoutMinutes * 60 * 1000, `AutoMod: ${reasons.join(', ')}`);
+            const text = `${summary} [message deleted, timed out for ${this.config.establishedTimeoutMinutes} minutes]`;
+            console.log(text);
+            await this.sendLog(message.guild, text);
+        } catch (error) {
+            console.error('[AutoMod] Failed to time out account:', error);
+            await this.sendLog(message.guild, `${summary} [message deleted, but the timeout failed: ${error.message}]`);
         }
     }
 
