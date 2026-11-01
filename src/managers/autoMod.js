@@ -25,15 +25,12 @@ class AutoModManager {
         this.config = {
             accountAgeDaysThreshold: 3,
             joinTimeMinutesThreshold: 15,
-            banScoreThreshold: 3,
+            newAccountKeywordThreshold: 2,
+            establishedKeywordThreshold: 3,
             specificKeywords: ['mrbeast', 'giveaway', 'giving away', 'promo code', 'crypto casino', 'claim your reward', 'click the link', 'usdt', 'nitro'],
             genericKeywords: ['bonus', 'activate', 'claim', 'free', 'withdraw'],
             keywordAliases: { mrbeast: ['mbeast'] },
             darkImage: { sampleSize: 96, darkPixelLevel: 70, minDarkFraction: 0.55, maxMeanLuminance: 90 },
-            establishedScoreThreshold: 6,
-            establishedMinSpecificKeywords: 2,
-            establishedAccountAction: 'timeout',
-            establishedTimeoutMinutes: 24 * 60,
             maxPendingOcrJobs: 8,
             exemptRoleIds: (process.env.AUTOMOD_EXEMPT_ROLE_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
             linkSpamChannelThreshold: 3,
@@ -111,6 +108,7 @@ class AutoModManager {
         const userId = message.author.id;
         const channelId = message.channel.id;
         const now = Date.now();
+        let ocrElapsedMs = null;
         const member = message.member;
         const accountAgeDays = (now - message.author.createdTimestamp) / (1000 * 60 * 60 * 24);
         const joinTimeMinutes = member ? (now - member.joinedTimestamp) / (1000 * 60) : 0;
@@ -123,26 +121,22 @@ class AutoModManager {
             if (found.size > 0) sources.add(source);
         };
 
-        addMatches(this.findKeywords(message.content), 'text');
-
         const linkMatches = message.content.match(/(https?:\/\/[^\s]+)/gi);
         const hasLink = linkMatches && linkMatches.length > 0;
-        if (hasLink) {
-            for (const link of linkMatches) addMatches(this.findKeywords(link), 'link');
-        }
-
         const hasMassMention = message.mentions.everyone || message.mentionEveryone;
-
-        const score = () => [...matched.values()].reduce((sum, weight) => sum + weight, 0);
-
-        // Would the keywords found so far (plus `extra`) be enough to act on this account?
         const evaluate = (extra = new Map()) => {
-            const all = new Map([...matched, ...extra]);
-            const total = [...all.values()].reduce((sum, weight) => sum + weight, 0);
-            if (isNewOrRecent) return total >= this.config.banScoreThreshold;
-            const specific = [...all.keys()].filter(keyword => this.config.specificKeywords.includes(keyword)).length;
-            return total >= this.config.establishedScoreThreshold && specific >= this.config.establishedMinSpecificKeywords;
-        };
+        const all = new Map([...matched, ...extra]);
+        const hasSpecificKeyword = [...all.keys()].some(keyword =>
+            this.config.specificKeywords.includes(keyword)
+        );
+
+        const requiredMatches = isNewOrRecent
+            ? this.config.newAccountKeywordThreshold
+            : this.config.establishedKeywordThreshold;
+
+        // Generic keywords alone must never trigger an action.
+        return hasSpecificKeyword && all.size >= requiredMatches;
+    };
 
         if (message.attachments.size > 0 && message.member) {
             for (const [, attachment] of message.attachments) {
@@ -169,76 +163,50 @@ class AutoModManager {
                 const ocrText = await this.runOCR(buffer, evaluate);
                 const found = this.findKeywords(ocrText);
 
-                const ocrElapsedMs = Math.max(
+                ocrElapsedMs = Math.max(
                     0,
                     Date.now() - (message.createdTimestamp || now)
                 );
 
-                const traceLog = [
-                    `[AutoMod OCR Trace] User: ${message.author.tag} (${userId})${isNewOrRecent ? '' : ' [established account]'}`,
-                    `[AutoMod OCR Trace] Message sent: ${new Date(message.createdTimestamp || now).toISOString()}`,
-                    `[AutoMod OCR Trace] OCR completed: ${new Date().toISOString()}`,
-                    `[AutoMod OCR Trace] Elapsed since message: ${(ocrElapsedMs / 1000).toFixed(2)} seconds`,
-                    `[AutoMod OCR Trace] Image URL: ${attachment.url}`,
-                    `[AutoMod OCR Trace] Raw Extracted Text:`,
-                    `--- START ---`,
-                    `${ocrText || '[NO TEXT DETECTED]'}`,
-                    `--- END ---`
-                ].join('\n');
-
-                // Dark images are common (game screenshots, dark mode), so stay quiet unless a keyword matched
-                if (found.size > 0 || VERBOSE) {
-                    console.log(traceLog);
-                    await this.sendLog(message.guild, traceLog, {
-                        summary: `OCR trace for ${message.author.tag} — image sent ${(ocrElapsedMs / 1000).toFixed(2)} seconds before OCR completed.`,
-                        imageUrl: attachment.url,
-                        elapsedMs: ocrElapsedMs
-                    });
-                } else {
-                    console.log(`[AutoMod] Scanned a dark image from ${message.author.tag}: no keywords`);
-                }
-
         addMatches(found, 'image');
-            if (found.size > 0) {
-                const reasons = [
-                    `Spam keywords detected in image: ${[...found.keys()].join(', ')}`
-                ];
 
-                console.log(
-                    `[AutoMod] Image spam detected from ${message.author.tag}: ${[...found.keys()].join(', ')}`
-                );
-
-                await this.executeBan(message, reasons);
-                return;
-            }
+        if (found.size > 0) {
+            console.log(
+                `[AutoMod OCR] ${message.author.tag}: ${[...found.keys()].join(', ')}`
+            );
+        }        
         }
     }
 
-        const hasSpamCriteria = evaluate() || (isNewOrRecent && hasMassMention);
+        const keywordSpamDetected = evaluate();
 
-        if (hasSpamCriteria) {
-            const reasons = [];
-            if (isNewOrRecent) {
-                if (accountAgeDays < this.config.accountAgeDaysThreshold) {
-                    reasons.push(`New Account (${accountAgeDays.toFixed(1)} days old)`);
-                } else {
-                    reasons.push(`Recent Join (${joinTimeMinutes.toFixed(1)} mins ago)`);
-                }
-            } else {
-                reasons.push(`Established account (${accountAgeDays.toFixed(0)} days old), possibly compromised`);
-            }
-            if (matched.size > 0) {
-                reasons.push(`Spam Keywords [${[...matched.keys()].join(', ')}] in ${[...sources].join('/')}, score ${score()}`);
-            }
-            if (isNewOrRecent && hasMassMention) reasons.push('Mass Mention (@everyone/@here)');
+    // Testing mode: report qualifying keyword matches without taking action.
+    if (keywordSpamDetected) {
+        const matchedKeywords = [...matched.keys()];
+        const requiredMatches = isNewOrRecent
+            ? this.config.newAccountKeywordThreshold
+            : this.config.establishedKeywordThreshold;
 
-            if (isNewOrRecent) {
-                await this.executeBan(message, reasons);
-            } else {
-                await this.handleEstablishedSpam(message, reasons);
-            }
-            return;
-        }
+        const logMessage = [
+            '[AutoMod TEST] Would have banned account',
+            `OCR elapsed: ${ocrElapsedMs !== null
+            ? `${(ocrElapsedMs / 1000).toFixed(2)} seconds`
+            : 'N/A'}`,
+            `Account type: ${isNewOrRecent ? 'New/recent' : 'Established'}`,
+            `Matched keywords: ${matchedKeywords.join(', ')}`,
+            `Matches: ${matchedKeywords.length}/${requiredMatches}`,
+            `Sources: ${[...sources].join(', ')}`
+        ].join('\n');
+
+        console.log(logMessage);
+        await this.sendLog(message.guild, logMessage);
+    }
+
+    // Keep the existing mass-mention protection for new/recent accounts.
+    if (isNewOrRecent && hasMassMention) {
+        await this.executeBan(message, ['Mass Mention (@everyone/@here)']);
+        return;
+    }
 
         if (hasLink) {
             if (!this.userLinkTracker.has(userId)) {
