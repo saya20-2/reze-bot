@@ -1,4 +1,4 @@
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -186,6 +186,46 @@ async function getAudioFile(videoUri, identifier, onProgress) {
     return entry.promise;
 }
 
+function runFlatPlaylist(url, limit) {
+    const args = ['--flat-playlist', '-J', '--no-warnings', '--playlist-end', String(limit), '--js-runtimes', JS_RUNTIME];
+    if (COOKIES) args.push('--cookies', COOKIES);
+    args.push('--', url);
+
+    return new Promise((resolve, reject) => {
+        execFile(BIN, args, { timeout: 60000, maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {
+            if (error) {
+                if (error.code === 'ENOENT') {
+                    missing = true;
+                    console.warn(`[yt-dlp] Binary "${BIN}" not found. Set YTDLP_PATH or install yt-dlp.`);
+                    return reject(new Error('yt-dlp not installed'));
+                }
+                const lastLine = String(stderr || error.message).trim().split('\n').pop();
+                return reject(new Error(error.killed ? 'yt-dlp timed out' : lastLine));
+            }
+            try {
+                resolve(JSON.parse(stdout));
+            } catch {
+                reject(new Error('Failed to parse yt-dlp JSON output'));
+            }
+        });
+    });
+}
+
+async function getMixEntries(videoId, limit = 40) {
+    if (DISABLED || missing) return [];
+    const url = `https://www.youtube.com/watch?v=${videoId}&list=RD${videoId}`;
+
+    await acquire();
+    try {
+        const json = await runFlatPlaylist(url, limit);
+        return (json.entries || [])
+            .filter(entry => entry && /^[\w-]{11}$/.test(entry.id || ''))
+            .map(entry => ({ id: entry.id, title: entry.title, duration: entry.duration }));
+    } finally {
+        release();
+    }
+}
+
 function prefetch(videoUri, identifier) {
     getAudioFile(videoUri, identifier).catch(() => {});
 }
@@ -204,4 +244,4 @@ function cleanup() {
 cleanup();
 setInterval(cleanup, 30 * 60 * 1000).unref();
 
-module.exports = { getAudioFile, prefetch, cleanup };
+module.exports = { getAudioFile, getMixEntries, prefetch, cleanup };

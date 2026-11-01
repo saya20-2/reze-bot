@@ -42,27 +42,41 @@ class AutoModManager {
         };
     }
 
-    async sendLog(guild, content) {
+    async sendLog(guild, content, options = {}) {
         try {
             const channelId = process.env.AUTOMOD_LOG_CHANNEL_ID;
             if (!channelId) return;
 
-            const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
-            if (channel && channel.isTextBased()) {
-                // Discord rejects messages over 2000 characters, and raw OCR text easily exceeds that
-                let text = content.replace(/```/g, "'''");
-                if (text.length > MAX_LOG_CHARS) text = `${text.slice(0, MAX_LOG_CHARS)}\n[truncated]`;
+            const channel = guild.channels.cache.get(channelId) ||
+                await guild.channels.fetch(channelId).catch(() => null);
+            if (!channel || !channel.isTextBased()) return;
 
-                const lines = text.split('\n');
-                let output = `\`\`\`\n${text}\n\`\`\``;
-
-                // Collapse in spoiler tags if it exceeds 10 lines to prevent clutter
-                if (lines.length > 10) {
-                    output = `|| \`\`\`\n${text}\n\`\`\` ||`;
-                }
-
-                await channel.send(output);
+            let text = String(content || '').replace(/```/g, "'''");
+            if (text.length > MAX_LOG_CHARS) {
+                text = `${text.slice(0, MAX_LOG_CHARS)}\n[truncated]`;
             }
+
+            // Spoiler-wrap every log body so details are collapsed by default.
+            const spoiler = `||\`\`\`\n${text}\n\`\`\`||`;
+            const payload = {
+                content: options.summary ? `${options.summary}\n${spoiler}` : spoiler,
+                allowedMentions: { parse: [] }
+            };
+
+            if (options.imageUrl) {
+                const elapsed = Number.isFinite(options.elapsedMs)
+                    ? `${(options.elapsedMs / 1000).toFixed(2)} seconds`
+                    : 'unknown';
+
+                payload.embeds = [{
+                    title: 'Open original image',
+                    url: options.imageUrl,
+                    description: `OCR completed ${elapsed} after the message was sent.`,
+                    image: { url: options.imageUrl }
+                }];
+            }
+
+            await channel.send(payload);
         } catch (error) {
             console.error('[AutoMod Log Error] Failed to send log message:', error);
         }
@@ -155,8 +169,16 @@ class AutoModManager {
                 const ocrText = await this.runOCR(buffer, evaluate);
                 const found = this.findKeywords(ocrText);
 
+                const ocrElapsedMs = Math.max(
+                    0,
+                    Date.now() - (message.createdTimestamp || now)
+                );
+
                 const traceLog = [
                     `[AutoMod OCR Trace] User: ${message.author.tag} (${userId})${isNewOrRecent ? '' : ' [established account]'}`,
+                    `[AutoMod OCR Trace] Message sent: ${new Date(message.createdTimestamp || now).toISOString()}`,
+                    `[AutoMod OCR Trace] OCR completed: ${new Date().toISOString()}`,
+                    `[AutoMod OCR Trace] Elapsed since message: ${(ocrElapsedMs / 1000).toFixed(2)} seconds`,
                     `[AutoMod OCR Trace] Image URL: ${attachment.url}`,
                     `[AutoMod OCR Trace] Raw Extracted Text:`,
                     `--- START ---`,
@@ -167,14 +189,30 @@ class AutoModManager {
                 // Dark images are common (game screenshots, dark mode), so stay quiet unless a keyword matched
                 if (found.size > 0 || VERBOSE) {
                     console.log(traceLog);
-                    await this.sendLog(message.guild, traceLog);
+                    await this.sendLog(message.guild, traceLog, {
+                        summary: `OCR trace for ${message.author.tag} — image sent ${(ocrElapsedMs / 1000).toFixed(2)} seconds before OCR completed.`,
+                        imageUrl: attachment.url,
+                        elapsedMs: ocrElapsedMs
+                    });
                 } else {
                     console.log(`[AutoMod] Scanned a dark image from ${message.author.tag}: no keywords`);
                 }
 
-                addMatches(found, 'image');
+        addMatches(found, 'image');
+            if (found.size > 0) {
+                const reasons = [
+                    `Spam keywords detected in image: ${[...found.keys()].join(', ')}`
+                ];
+
+                console.log(
+                    `[AutoMod] Image spam detected from ${message.author.tag}: ${[...found.keys()].join(', ')}`
+                );
+
+                await this.executeBan(message, reasons);
+                return;
             }
         }
+    }
 
         const hasSpamCriteria = evaluate() || (isNewOrRecent && hasMassMention);
 
