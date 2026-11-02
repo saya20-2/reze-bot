@@ -1,0 +1,32 @@
+{
+  "since": "2026-11-02T01:29:49.784Z",
+  "totals": {
+    "certain": 0,
+    "unsure": 2,
+    "borderline": 0
+  },
+  "byAccount": {
+    "new": {
+      "certain": 0,
+      "unsure": 2,
+      "borderline": 0
+    },
+    "established": {
+      "certain": 0,
+      "unsure": 0,
+      "borderline": 0
+    }
+  },
+  "standalone": {
+    "free": 2
+  },
+  "appearances": {
+    "free": 2
+  },
+  "combos": {
+    "certain": {},
+    "borderline": {}
+  },
+  "pairs": {},
+  "multiKeywordEvents": 0
+}
