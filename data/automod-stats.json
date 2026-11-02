@@ -1,8 +1,8 @@
 {
   "since": "2026-11-02T01:29:49.784Z",
   "totals": {
-    "certain": 0,
-    "unsure": 2,
+    "certain": 8,
+    "unsure": 4,
     "borderline": 0
   },
   "byAccount": {
@@ -12,21 +12,45 @@
       "borderline": 0
     },
     "established": {
-      "certain": 0,
-      "unsure": 0,
+      "certain": 8,
+      "unsure": 2,
       "borderline": 0
     }
   },
   "standalone": {
-    "free": 2
+    "free": 4
   },
   "appearances": {
-    "free": 2
+    "free": 4,
+    "bonus": 8,
+    "claim": 8,
+    "claim your reward": 8,
+    "giving away": 8,
+    "mrbeast": 8,
+    "withdraw": 8
   },
   "combos": {
-    "certain": {},
+    "certain": {
+      "bonus + claim + claim your reward + giving away + mrbeast + withdraw": 8
+    },
     "borderline": {}
   },
-  "pairs": {},
-  "multiKeywordEvents": 0
+  "pairs": {
+    "bonus + claim": 8,
+    "bonus + claim your reward": 8,
+    "bonus + giving away": 8,
+    "bonus + mrbeast": 8,
+    "bonus + withdraw": 8,
+    "claim + claim your reward": 8,
+    "claim + giving away": 8,
+    "claim + mrbeast": 8,
+    "claim + withdraw": 8,
+    "claim your reward + giving away": 8,
+    "claim your reward + mrbeast": 8,
+    "claim your reward + withdraw": 8,
+    "giving away + mrbeast": 8,
+    "giving away + withdraw": 8,
+    "mrbeast + withdraw": 8
+  },
+  "multiKeywordEvents": 8
 }

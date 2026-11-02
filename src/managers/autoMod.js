@@ -1,11 +1,11 @@
-const tesseract = require("node-tesseract-ocr");
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const sharp = require('sharp');
 const { PermissionFlagsBits } = require('discord.js');
-const AutoModStats = require('./autoModStats');
 
 const OCR_TIMEOUT_MS = 30000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -14,6 +14,10 @@ const OCR_SIZE = 3000;
 const MIN_USEFUL_TEXT_LENGTH = 20;
 const MAX_LOG_CHARS = 1800;
 const VERBOSE = process.env.AUTOMOD_DEBUG === 'true';
+const execFileAsync = promisify(execFile);
+
+// Generic words are more prone to visual false positives than distinctive scam terms.
+const OCR_CONFIDENCE = { specific: 40, generic: 65 };
 
 class AutoModManager {
     constructor(client) {
@@ -22,7 +26,6 @@ class AutoModManager {
         this.userLinkTracker = new Map();
         this.ocrChain = Promise.resolve();
         this.pendingOcr = 0;
-        this.stats = new AutoModStats(process.env.AUTOMOD_STATS_FILE || path.join(process.cwd(), 'data', 'automod-stats.json'));
 
         this.config = {
             accountAgeDaysThreshold: 3,
@@ -34,8 +37,6 @@ class AutoModManager {
             keywordAliases: { mrbeast: ['mbeast'] },
             darkImage: { sampleSize: 96, darkPixelLevel: 70, minDarkFraction: 0.55, maxMeanLuminance: 90 },
             maxPendingOcrJobs: 8,
-            statsReportEvery: 10,
-            statsTopEntries: 5,
             exemptRoleIds: (process.env.AUTOMOD_EXEMPT_ROLE_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
             linkSpamChannelThreshold: 3,
             linkSpamWindowMs: 5 * 60 * 1000,
@@ -106,6 +107,70 @@ class AutoModManager {
         return found;
     }
 
+    findKeywordsFromTsv(tsv) {
+        const found = new Map();
+        if (!tsv) return found;
+
+        const lines = new Map();
+        const rows = tsv.split(/\r?\n/);
+
+        for (let i = 1; i < rows.length; i++) {
+            const columns = rows[i].split('\t');
+            if (columns.length < 12) continue;
+
+            const level = Number(columns[0]);
+            const confidence = Number(columns[10]);
+            const rawWord = columns.slice(11).join('\t').trim();
+            if (level !== 5 || !rawWord || !Number.isFinite(confidence) || confidence < 0) continue;
+
+            const lineKey = columns.slice(1, 5).join(':');
+            if (!lines.has(lineKey)) lines.set(lineKey, []);
+            lines.get(lineKey).push({
+                word: rawWord.toLowerCase().replace(/[^a-z0-9]/g, ''),
+                confidence
+            });
+        }
+
+        const matchesVariant = (variant, minimumConfidence, lineWords, allowCompact) => {
+            const target = variant.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (!target) return false;
+
+            for (let start = 0; start < lineWords.length; start++) {
+                let combined = '';
+                for (let end = start; end < Math.min(lineWords.length, start + 4); end++) {
+                    const token = lineWords[end];
+                    if (!token.word || token.confidence < minimumConfidence) break;
+                    combined += token.word;
+
+                    if (allowCompact) {
+                        if (combined.includes(target)) return true;
+                    } else if (new RegExp(`^${target}(?:s|ed|al|n|ing)?$`).test(combined)) {
+                        return true;
+                    }
+                    if (combined.length > target.length + 8) break;
+                }
+            }
+            return false;
+        };
+
+        for (const [keyword, weight] of [
+            ...this.config.specificKeywords.map(keyword => [keyword, 2]),
+            ...this.config.genericKeywords.map(keyword => [keyword, 1])
+        ]) {
+            const minimumConfidence = weight === 2
+                ? OCR_CONFIDENCE.specific
+                : OCR_CONFIDENCE.generic;
+            const variants = [keyword, ...(this.config.keywordAliases[keyword] || [])];
+            const hit = [...lines.values()].some(lineWords =>
+                variants.some(variant => matchesVariant(variant, minimumConfidence, lineWords, weight === 2))
+            );
+
+            if (hit) found.set(keyword, weight);
+        }
+
+        return found;
+    }
+
     async handleMessage(message) {
         if (!message.guild || message.author.bot) return;
 
@@ -113,7 +178,6 @@ class AutoModManager {
         const channelId = message.channel.id;
         const now = Date.now();
         let ocrElapsedMs = null;
-        let triggerImageUrl = null;
         const member = message.member;
         const accountAgeDays = (now - message.author.createdTimestamp) / (1000 * 60 * 60 * 24);
         const joinTimeMinutes = member ? (now - member.joinedTimestamp) / (1000 * 60) : 0;
@@ -129,16 +193,15 @@ class AutoModManager {
         const linkMatches = message.content.match(/(https?:\/\/[^\s]+)/gi);
         const hasLink = linkMatches && linkMatches.length > 0;
         const hasMassMention = message.mentions.everyone || message.mentionEveryone;
-
-        const requiredMatches = isNewOrRecent
-            ? this.config.newAccountKeywordThreshold
-            : this.config.establishedKeywordThreshold;
-
         const evaluate = (extra = new Map()) => {
             const all = new Map([...matched, ...extra]);
             const hasSpecificKeyword = [...all.keys()].some(keyword =>
                 this.config.specificKeywords.includes(keyword)
             );
+
+            const requiredMatches = isNewOrRecent
+                ? this.config.newAccountKeywordThreshold
+                : this.config.establishedKeywordThreshold;
 
             // Generic keywords alone must never trigger an action.
             return hasSpecificKeyword && all.size >= requiredMatches;
@@ -166,8 +229,8 @@ class AutoModManager {
                     continue;
                 }
 
-                const ocrText = await this.runOCR(buffer, evaluate);
-                const found = this.findKeywords(ocrText);
+                const ocrResult = await this.runOCR(buffer, evaluate);
+                const found = ocrResult?.keywords || new Map();
 
                 ocrElapsedMs = Math.max(
                     0,
@@ -177,7 +240,6 @@ class AutoModManager {
                 addMatches(found, 'image');
 
                 if (found.size > 0) {
-                    triggerImageUrl = attachment.url;
                     console.log(
                         `[AutoMod OCR] ${message.author.tag}: ${[...found.keys()].join(', ')}`
                     );
@@ -187,48 +249,26 @@ class AutoModManager {
 
         const keywordSpamDetected = evaluate();
 
-        if (matched.size > 0) {
+        // Testing mode: report qualifying keyword matches without taking action.
+        if (keywordSpamDetected) {
             const matchedKeywords = [...matched.keys()];
-            const category = keywordSpamDetected
-                ? 'certain'
-                : matchedKeywords.length === 1 ? 'unsure' : 'borderline';
-
-            this.stats.record({
-                category,
-                accountType: isNewOrRecent ? 'new' : 'established',
-                keywords: matchedKeywords
-            });
-
-            const headline = {
-                certain: '[AutoMod TEST] CERTAIN: would have banned account',
-                unsure: '[AutoMod TEST] UNSURE: only one keyword matched',
-                borderline: '[AutoMod TEST] BORDERLINE: several keywords matched, below the ban threshold'
-            }[category];
+            const requiredMatches = isNewOrRecent
+                ? this.config.newAccountKeywordThreshold
+                : this.config.establishedKeywordThreshold;
 
             const logMessage = [
-                headline,
-                `User: ${message.author.tag} (${userId})`,
+                '[AutoMod TEST] Would have banned account',
                 `OCR elapsed: ${ocrElapsedMs !== null
                     ? `${(ocrElapsedMs / 1000).toFixed(2)} seconds`
                     : 'N/A'}`,
                 `Account type: ${isNewOrRecent ? 'New/recent' : 'Established'}`,
                 `Matched keywords: ${matchedKeywords.join(', ')}`,
                 `Matches: ${matchedKeywords.length}/${requiredMatches}`,
-                `Sources: ${[...sources].join(', ')}`,
-                `Running ratio unsure : certain = ${this.stats.ratioText()}`
+                `Sources: ${[...sources].join(', ')}`
             ].join('\n');
 
             console.log(logMessage);
-            await this.sendLog(message.guild, logMessage, {
-                imageUrl: triggerImageUrl,
-                elapsedMs: ocrElapsedMs
-            });
-
-            if (this.stats.shouldReport(this.config.statsReportEvery)) {
-                const report = this.stats.report(this.config.statsTopEntries);
-                console.log(report);
-                await this.sendLog(message.guild, report);
-            }
+            await this.sendLog(message.guild, logMessage);
         }
 
         // Keep the existing mass-mention protection for new/recent accounts.
@@ -395,12 +435,19 @@ class AutoModManager {
         const results = [];
         const detectedKeywords = new Map();
 
-        const recordResult = (text, region, psm) => {
-            if (!text) return;
+        const recordResult = (tsv, region, psm) => {
+            if (!tsv) return;
 
-            results.push(text);
+            const recognizedText = tsv.split(/\r?\n/).slice(1).map(row => {
+                const columns = row.split('\t');
+                return columns.length >= 12 && Number(columns[0]) === 5
+                    ? columns.slice(11).join('\t').trim()
+                    : '';
+            }).filter(Boolean).join(' ');
 
-            const found = this.findKeywords(text);
+            if (recognizedText) results.push(recognizedText);
+
+            const found = this.findKeywordsFromTsv(tsv);
             for (const [keyword, weight] of found) {
                 detectedKeywords.set(keyword, weight);
             }
@@ -411,10 +458,11 @@ class AutoModManager {
         };
 
         const isConclusive = () => evaluate(detectedKeywords);
+        const result = () => ({ text: results.join('\n'), keywords: detectedKeywords });
 
         // Pass 1: the whole image, sparse text mode (screenshots, memes, text scattered around)
         recordResult(await this.recognize(prepared, 11), 'full', 11);
-        if (isConclusive()) return results.join('\n');
+        if (isConclusive()) return result();
 
         // Pass 2: overlapping quadrants as blocks of text, stopping as soon as it is conclusive
         for (const region of regions) {
@@ -429,7 +477,7 @@ class AutoModManager {
                 .toBuffer();
 
             recordResult(await this.recognize(crop, 6), region.name, 6);
-            if (isConclusive()) return results.join('\n');
+            if (isConclusive()) return result();
         }
 
         // Last resort: if almost nothing was read, try a hard black/white version of the whole image
@@ -442,18 +490,24 @@ class AutoModManager {
             recordResult(await this.recognize(thresholded, 6), 'full-thresholded', 6);
         }
 
-        return results.join('\n');
+        return result();
     }
 
     async recognize(buffer, psm) {
         const tempFilePath = path.join(os.tmpdir(), `automod_${crypto.randomUUID()}.png`);
         try {
             await fs.writeFile(tempFilePath, buffer);
-            const config = { lang: 'eng', oem: 1, psm, binary: this.config.tesseractBinary };
-            return await Promise.race([
-                tesseract.recognize(tempFilePath, config),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('OCR timed out')), OCR_TIMEOUT_MS).unref())
-            ]);
+            const { stdout } = await execFileAsync(
+                this.config.tesseractBinary,
+                [tempFilePath, 'stdout', '-l', 'eng', '--oem', '1', '--psm', String(psm), 'tsv'],
+                { timeout: OCR_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+            );
+            return stdout;
+        } catch (error) {
+            if (error.code === 'ETIMEDOUT' || error.killed) {
+                throw new Error(`OCR timed out after ${OCR_TIMEOUT_MS}ms`);
+            }
+            throw error;
         } finally {
             await fs.unlink(tempFilePath).catch(() => {});
         }
