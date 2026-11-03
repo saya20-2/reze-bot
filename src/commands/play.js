@@ -8,7 +8,13 @@ module.exports = {
         .addStringOption(option =>
             option.setName('query')
                 .setDescription('The song name, URL, or playlist link to play')
-                .setRequired(true)),
+                .setRequired(true))
+        .addBooleanOption(option =>
+            option.setName('lyrics')
+                .setDescription('Show the lyrics below the now playing message (turn off again with /toggle-lyrics)'))
+        .addBooleanOption(option =>
+            option.setName('romanized')
+                .setDescription('Show romanized (romaji) lyrics instead of the original script, when available')),
     async execute(interaction) {
         await interaction.deferReply();
         const query = interaction.options.getString('query');
@@ -21,6 +27,7 @@ module.exports = {
         const lavalink = interaction.client.lavalinkManager;
         const queue = lavalink.getQueue(interaction.guildId);
         queue.textChannelId = interaction.channelId;
+        lavalink.applyLyricsOptions(interaction);
         let player = lavalink.shoukaku.players.get(interaction.guildId);
 
         try {
@@ -51,7 +58,7 @@ module.exports = {
                 const text = `Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks!`;
                 const reply = await interaction.editReply(text);
                 if (wasIdle) lavalink.setNowPlaying(interaction.guildId, reply, text);
-                else lavalink.refreshPrefetch(interaction.guildId);
+                else { lavalink.refreshPrefetch(interaction.guildId); lavalink.flushLyrics(interaction.guildId); }
                 return reply;
             }
 
@@ -75,6 +82,7 @@ module.exports = {
 
             const reply = await interaction.editReply(`Added to queue: ${link}`);
             lavalink.refreshPrefetch(interaction.guildId);
+            lavalink.flushLyrics(interaction.guildId);
             return reply;
         } catch (error) {
             console.error('Play command error:', error);

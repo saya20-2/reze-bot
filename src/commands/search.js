@@ -33,7 +33,13 @@ module.exports = {
         .addStringOption(option =>
             option.setName('query')
                 .setDescription('Song title and artist, e.g. "Yonezu Kenshi Lemon"')
-                .setRequired(true)),
+                .setRequired(true))
+        .addBooleanOption(option =>
+            option.setName('lyrics')
+                .setDescription('Show the lyrics below the now playing message (turn off again with /toggle-lyrics)'))
+        .addBooleanOption(option =>
+            option.setName('romanized')
+                .setDescription('Show romanized (romaji) lyrics instead of the original script, when available')),
     async execute(interaction) {
         await interaction.deferReply();
         const query = interaction.options.getString('query');
@@ -109,6 +115,8 @@ module.exports = {
 
         try {
             const queue = lavalink.getQueue(interaction.guildId);
+            queue.textChannelId = interaction.channelId;
+            lavalink.applyLyricsOptions(interaction);
             let player = lavalink.shoukaku.players.get(interaction.guildId);
             if (!player) {
                 player = await lavalink.shoukaku.joinVoiceChannel({
@@ -129,7 +137,7 @@ module.exports = {
             const content = wasIdle ? `Now playing: ${line}` : `Added to queue: ${line}`;
             const reply = await interaction.editReply({ content, embeds: [], components: [] });
             if (wasIdle) lavalink.setNowPlaying(interaction.guildId, reply, content);
-            else lavalink.refreshPrefetch(interaction.guildId);
+            else { lavalink.refreshPrefetch(interaction.guildId); lavalink.flushLyrics(interaction.guildId); }
             return reply;
         } catch (error) {
             console.error('Search select error:', error);

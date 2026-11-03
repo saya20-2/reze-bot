@@ -1,6 +1,8 @@
 const { Shoukaku, Connectors } = require('shoukaku');
 const ytdlp = require('./Ytdlp');
 const { formatNextLine } = require('./downloadProgress');
+const lyrics = require('./lyrics');
+const { EmbedBuilder } = require('discord.js');
 const DISCONNECT_TIMEOUT_MS = 30 * 60 * 1000;
 const EARLY_END_MS = 15000;
 const MAX_RESUME_ATTEMPTS = 2;
@@ -8,6 +10,11 @@ const MIN_RESUME_PROGRESS_MS = 5000;
 const EMOTE_DOWNLOADING = 'Mad_oka';
 const EMOTE_DONE = 'MadoVibing_MM';
 const NOW_PLAYING_EDIT_INTERVAL_MS = 2000;
+const MAX_LYRICS_MESSAGES = 3;
+
+function newLyricsState() {
+    return { enabled: false, romanized: false, pending: false, token: 0, channelId: null, messageIds: [] };
+}
 
 class MusicQueue {
     constructor(guildId) {
@@ -18,6 +25,7 @@ class MusicQueue {
         this.playable = null; 
         this.textChannelId = null;
         this.nowPlaying = null; 
+        this.lyrics = newLyricsState();
     }
 
     add(track) {
@@ -45,6 +53,7 @@ class MusicQueue {
         this.retry = null;
         this.playable = null;
         this.nowPlaying = null;
+        this.lyrics = newLyricsState();
     }
 }
 
@@ -150,6 +159,7 @@ class LavalinkManager {
         queue.retry = null;
         queue.playable = null;
         this.clearIdle(guildId);
+        this.deleteLyricsMessages(guildId);
         try {
             const encoded = await this.getPlayableEncoded(player, next, options.onProgress);
             queue.playable = encoded;
@@ -168,6 +178,7 @@ class LavalinkManager {
             np.line = null;
             np.stage = null;
             this.sendNowPlayingEdit(guildId, np);
+            this.refreshLyrics(guildId);
         }
 
         this.refreshPrefetch(guildId);
@@ -195,6 +206,7 @@ class LavalinkManager {
             pending: Promise.resolve(),
         };
         this.refreshPrefetch(guildId);
+        this.refreshLyrics(guildId);
     }
 
     detachNowPlaying(guildId) {
@@ -241,6 +253,9 @@ class LavalinkManager {
         const queue = this.getQueue(guildId);
         const np = queue.nowPlaying;
         const upcoming = queue.tracks[0];
+        if (queue.lyrics.enabled && upcoming && !upcoming.info.isStream) {
+            lyrics.getLyrics(upcoming.info, { romanized: queue.lyrics.romanized }).catch(() => {});
+        }
         const downloadable = upcoming && upcoming.info.sourceName === 'youtube' && !upcoming.info.isStream;
 
         const clearLine = () => {
@@ -290,6 +305,119 @@ class LavalinkManager {
         if (onProgress) onProgress({ stage: 'fallback', title: track.info.title });
         console.log(`[Lavalink] Playing "${track.info.title}" via the YouTube plugin`);
         return track.encoded;
+    }
+
+    // ---- Lyrics ----------------------------------------------------------------------------------------------
+    // Lyrics live in their own message(s) right below the "Now playing" message: message content always renders
+    // above link previews, so lyrics inside that message could never sit under the video embed.
+
+    // Reads the optional `lyrics` / `romanized` options of /play, /search and /radio. Returns nothing; if lyrics
+    // should show up for a song that is already playing, flushLyrics() posts them once the command has replied.
+    applyLyricsOptions(interaction) {
+        const enabled = interaction.options.getBoolean('lyrics');
+        const romanized = interaction.options.getBoolean('romanized');
+        this.setLyricsPreferences(interaction.guildId, {
+            enabled: enabled ?? undefined,
+            romanized: romanized ?? undefined,
+        });
+    }
+
+    setLyricsPreferences(guildId, { enabled, romanized }) {
+        const queue = this.getQueue(guildId);
+        const state = queue.lyrics;
+        const wasEnabled = state.enabled;
+        const wasRomanized = state.romanized;
+        if (typeof romanized === 'boolean') state.romanized = romanized;
+        if (typeof enabled === 'boolean') state.enabled = enabled;
+
+        if (!state.enabled) {
+            if (wasEnabled) {
+                state.token++;
+                this.deleteLyricsMessages(guildId);
+            }
+            return;
+        }
+        // Nothing is playing yet when a command starts a fresh queue: setNowPlaying() covers that case
+        if (queue.current && (!wasEnabled || state.romanized !== wasRomanized)) state.pending = true;
+    }
+
+    flushLyrics(guildId) {
+        if (this.getQueue(guildId).lyrics.pending) return this.refreshLyrics(guildId);
+    }
+
+    async deleteLyricsMessages(guildId) {
+        const state = this.getQueue(guildId).lyrics;
+        const ids = state.messageIds.splice(0);
+        if (ids.length === 0 || !state.channelId) return;
+        try {
+            const channel = await this.client.channels.fetch(state.channelId);
+            await Promise.all(ids.map(id => channel.messages.delete(id).catch(() => {})));
+        } catch {
+            // channel gone or no access, nothing left to clean up
+        }
+    }
+
+    async refreshLyrics(guildId) {
+        const queue = this.getQueue(guildId);
+        const state = queue.lyrics;
+        state.pending = false;
+        const token = ++state.token;
+        await this.deleteLyricsMessages(guildId);
+
+        const track = queue.current;
+        if (!state.enabled || !track || track.info.isStream || !queue.textChannelId) return;
+        const stale = () => state.token !== token || queue.current !== track;
+
+        let result = null;
+        try {
+            result = await lyrics.getLyrics(track.info, { romanized: state.romanized });
+        } catch (error) {
+            console.warn(`[Lyrics] Lookup failed for "${track.info.title}": ${error.message}`);
+        }
+        if (stale()) return;
+
+        const channel = await this.client.channels.fetch(queue.textChannelId).catch(() => null);
+        if (!channel?.send) return;
+
+        const sent = [];
+        for (const payload of this.buildLyricsPayloads(track, result, state.romanized)) {
+            if (stale()) break;
+            try {
+                sent.push((await channel.send({ ...payload, allowedMentions: { parse: [] } })).id);
+            } catch (error) {
+                console.warn(`[Lyrics] Could not post lyrics: ${error.message}`);
+                break;
+            }
+        }
+
+        if (stale()) {
+            await Promise.all(sent.map(id => channel.messages.delete(id).catch(() => {})));
+            return;
+        }
+        state.channelId = channel.id;
+        state.messageIds.push(...sent);
+    }
+
+    buildLyricsPayloads(track, result, romanizedRequested) {
+        const title = track.info.title;
+        if (!result) return [{ content: `Reze couldn’t find lyrics for **${title}** :(` }];
+
+        const allPages = lyrics.paginate(lyrics.escapeLyrics(result.text));
+        const pages = allPages.slice(0, MAX_LYRICS_MESSAGES);
+        const notes = [`Source: ${result.provider}`];
+        if (result.romanized) notes.push('romanized');
+        else if (romanizedRequested) notes.push('no romanized version found, showing the original');
+        if (allPages.length > pages.length) notes.push('truncated, full lyrics at the source');
+
+        return pages.map((page, index) => {
+            const embed = new EmbedBuilder().setDescription(page);
+            if (index === 0) {
+                embed.setTitle(`Lyrics: ${title}`.slice(0, 256));
+                if (result.url) embed.setURL(result.url);
+            }
+            if (index === pages.length - 1) embed.setFooter({ text: notes.join(' • ') });
+            return { embeds: [embed] };
+        });
     }
 
     async resumeTrack(guildId, player, track) {
