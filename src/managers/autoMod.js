@@ -716,8 +716,20 @@ class AutoModManager {
             keywords: detectedKeywords
         });
 
+        let ocrFailed = false;
+        const safeRecognize = async (buf, psm, name) => {
+            if (ocrFailed) return null;
+            try {
+                return await this.recognize(buf, psm);
+            } catch (error) {
+                ocrFailed = true;
+                console.warn(`[AutoMod OCR] ${name} PSM ${psm} failed: ${error.message}`);
+                return null;
+            }
+        };
+
         // Pass 1: whole image, sparse text mode.
-        recordResult(await this.recognize(prepared, 11), 'full', 11);
+        recordResult(await safeRecognize(prepared, 11, 'full'), 'full', 11);
 
         if (isConclusive()) return result();
 
@@ -734,7 +746,7 @@ class AutoModManager {
                 .toBuffer();
 
             recordResult(
-                await this.recognize(crop, 6),
+                await safeRecognize(crop, 6, region.name),
                 region.name,
                 6
             );
@@ -753,7 +765,7 @@ class AutoModManager {
                 .toBuffer();
 
             recordResult(
-                await this.recognize(thresholded, 6),
+                await safeRecognize(thresholded, 6, 'full-thresolded'),
                 'full-thresholded',
                 6
             );
@@ -787,7 +799,8 @@ class AutoModManager {
                 {
                     timeout: OCR_TIMEOUT_MS,
                     maxBuffer: 10 * 1024 * 1024,
-                    encoding: 'utf8'
+                    encoding: 'utf8',
+                    env: {...process.env, OMP_THREAD_LIMIT: '1'}
                 }
             );
 

@@ -2,7 +2,7 @@ const { Shoukaku, Connectors } = require('shoukaku');
 const ytdlp = require('./Ytdlp');
 const { formatNextLine } = require('./downloadProgress');
 const lyrics = require('./lyrics');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, ActivityType } = require('discord.js');
 const DISCONNECT_TIMEOUT_MS = 30 * 60 * 1000;
 const EARLY_END_MS = 15000;
 const MAX_RESUME_ATTEMPTS = 2;
@@ -150,12 +150,14 @@ class LavalinkManager {
             queue.current = null;
             this.detachNowPlaying(guildId);
             this.scheduleIdle(guildId);
+            this.client.updatePresence();
             return null;
         }
 
         if (options.silent) this.detachNowPlaying(guildId);
 
         queue.current = next;
+        queue.startedAt = Date.now();
         queue.retry = null;
         queue.playable = null;
         this.clearIdle(guildId);
@@ -168,6 +170,7 @@ class LavalinkManager {
             queue.current = null;
             queue.playable = null;
             this.scheduleIdle(guildId);
+            this.client.updatePresence();
             throw error;
         }
 
@@ -181,6 +184,7 @@ class LavalinkManager {
             this.refreshLyrics(guildId);
         }
 
+        this.client.updatePresence();
         this.refreshPrefetch(guildId);
         return next;
     }
@@ -246,6 +250,21 @@ class LavalinkManager {
         np.stage = stage;
         if (!stageChanged && Date.now() - np.lastEdit < NOW_PLAYING_EDIT_INTERVAL_MS) return;
         this.sendNowPlayingEdit(guildId, np);
+    }
+
+    getNowPlayingActivity() {
+        let latest = null;
+        for (const [guildId, queue] of this.queues) {
+            if (!queue.current || !this.shoukaku.players.has(guildId)) continue;
+            if (!latest || (queue.startedAt || 0) > (latest.startedAt || 0)) latest = queue;
+        }
+        if (!latest) return null;
+        const { title, author } = latest.current.info;
+        return {
+            name: String(title).slice(0, 128),
+            state: author ? String(author).replace(/ - Topic$/i, '').slice(0, 128) : undefined,
+            type: ActivityType.Listening
+        };
     }
 
     // Download the first upcoming song ahead of time and show its progress under "Now playing"
@@ -474,6 +493,7 @@ class LavalinkManager {
         this.clearAlone(guildId);
         this.detachNowPlaying(guildId);
         this.getQueue(guildId).clear();
+        this.client.updatePresence();
 
         if (this.shoukaku.players.has(guildId) || this.shoukaku.connections.has(guildId)) {
             try {

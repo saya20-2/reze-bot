@@ -5,6 +5,12 @@ const path = require('node:path');
 const ModMailManager = require('./managers/modMail');
 const AutoModManager = require('./managers/autoMod');
 const callResponseCooldown = new Map();
+const defaultActivity = () => ({
+    name: process.env.NODE_ENV === 'production'
+        ? 'Message me to get in touch with the Madocord team!'
+        : 'with POC fuses',
+    type: ActivityType.Listening
+});
 
 class MyBot extends Client {
     constructor() {
@@ -18,7 +24,8 @@ class MyBot extends Client {
                 GatewayIntentBits.GuildPresences,
                 GatewayIntentBits.GuildMembers
             ],
-            partials: [Partials.Channel]
+            partials: [Partials.Channel],
+            presence: {activities: [defaultActivity()]}
         });
 
         this.commands = new Collection();
@@ -26,9 +33,27 @@ class MyBot extends Client {
         this.modMailManager = this.modmail;
         this.lavalinkManager = new LavalinkManager(this);
         this.autoMod = new AutoModManager(this);
+        this.on('shardReady', () => this.updatePresence(true));
+        this.on('shardResume', () => this.updatePresence(true));
         
         this.loadCommands();
         this.setupEvents();
+    }
+
+
+    // Debounced: rapid skips collapse into one update, and Discord only allows 5 presence updates per 20s
+    updatePresence(force = false) {
+        clearTimeout(this.presenceTimer);
+        this.presenceTimer = setTimeout(() => this.applyPresence(force), 2000);
+    }
+
+    applyPresence(force = false) {
+        if (!this.user) return;
+        const activity = this.lavalinkManager.getNowPlayingActivity() ?? defaultActivity();
+        const key = JSON.stringify(activity);
+        if (!force && key === this.lastPresenceKey) return;
+        this.lastPresenceKey = key;
+        this.user.setActivity(activity);
     }
 
     loadCommands() {
@@ -48,18 +73,8 @@ class MyBot extends Client {
             console.error("ModMailManager not found on Bot instance!");
         }
 
-        const setBotStatus = () => {
-            c.user.setActivity({
-                name: process.env.NODE_ENV === 'production' 
-                    ? 'Message me to get in touch with the Madocord team!' 
-                    : 'with POC fuses',
-                type: ActivityType.Listening
-            });
-        };
-
-    setBotStatus(); 
-    
-    setInterval(setBotStatus, 3600000); 
+    this.applyPresence(true);
+    setInterval(() => this.applyPresence(true), 3600000).unref();
 
     let lastTick = Date.now();
     setInterval(() => {
