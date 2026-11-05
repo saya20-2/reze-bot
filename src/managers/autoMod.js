@@ -43,11 +43,26 @@ class AutoModManager {
                 'claim your reward',
                 'click the link',
                 'usdt',
-                'nitro'
+                'nitro',
+                'all-time high',
+                'eth',
+                'bnb',
+                'hyperliquid',
+                'unrealized pnl',
+                'you could have made'
             ],
 
+            // only exact matches are logged (not i.e. eth in something)
+            exactKeywords: ['eth', 'bnb'],
+
+            specificKeywordThreshold: 3,
+
             genericKeywords: ['claim', 'withdraw'],
-            keywordAliases: { mrbeast: ['mbeast'] },
+
+            keywordAliases: {
+                mrbeast: ['mbeast'],
+                'you could have made': ["you could've made"]
+            },
 
             darkImage: {
                 sampleSize: 96,
@@ -170,6 +185,17 @@ class AutoModManager {
         };
     }
 
+    meetsThreshold(keywords) {
+        const specific = [...keywords.keys()]
+            .filter(keyword => this.config.specificKeywords.includes(keyword))
+            .length;
+
+        return specific >= 1 && (
+            keywords.size >= this.config.keywordThreshold ||
+            specific >= this.config.specificKeywordThreshold
+        );
+    }
+
     findKeywordsFromTsv(tsv) {
         const found = new Map();
         if (!tsv) return found;
@@ -204,14 +230,24 @@ class AutoModManager {
             });
         }
 
+        // mode: 'exact'   = one whole OCR word must equal the keyword (tickers like eth, bnb)
+        //       'compact' = the keyword may appear inside words glued together (specific keywords)
+        //       'word'    = whole word with a few allowed suffixes (generic keywords)
         const matchesVariant = (
             variant,
             minimumConfidence,
             lineWords,
-            allowCompact
+            mode
         ) => {
             const target = variant.toLowerCase().replace(/[^a-z0-9]/g, '');
             if (!target) return false;
+
+            if (mode === 'exact') {
+                return lineWords.some(token =>
+                    token.confidence >= minimumConfidence &&
+                    token.word === target
+                );
+            }
 
             for (let start = 0; start < lineWords.length; start++) {
                 let combined = '';
@@ -230,7 +266,7 @@ class AutoModManager {
 
                     combined += token.word;
 
-                    if (allowCompact) {
+                    if (mode === 'compact') {
                         if (combined.includes(target)) return true;
                     } else if (
                         new RegExp(`^${target}(?:s|ed|al|n|ing)?$`)
@@ -254,6 +290,10 @@ class AutoModManager {
                 ? OCR_CONFIDENCE.specific
                 : OCR_CONFIDENCE.generic;
 
+            const mode = this.config.exactKeywords.includes(keyword)
+                ? 'exact'
+                : (weight === 2 ? 'compact' : 'word');
+
             const variants = [
                 keyword,
                 ...(this.config.keywordAliases[keyword] || [])
@@ -265,7 +305,7 @@ class AutoModManager {
                         variant,
                         minimumConfidence,
                         lineWords,
-                        weight === 2
+                        mode
                     )
                 )
             );
@@ -314,16 +354,8 @@ class AutoModManager {
         const hasMassMention =
             message.mentions.everyone || message.mentionEveryone;
 
-        const evaluate = (extra = new Map()) => {
-            const all = new Map([...matched, ...extra]);
-
-            const hasSpecificKeyword = [...all.keys()].some(keyword =>
-                this.config.specificKeywords.includes(keyword)
-            );
-
-            return hasSpecificKeyword &&
-                all.size >= this.config.keywordThreshold;
-        };
+        const evaluate = (extra = new Map()) =>
+            this.meetsThreshold(new Map([...matched, ...extra]));
 
         if (message.attachments.size > 0 && message.member) {
             for (const [, attachment] of message.attachments) {
@@ -388,14 +420,8 @@ class AutoModManager {
 
         const allKeywords = [...matched.keys()];
 
-        const hasSpecificKeyword = allKeywords.some(keyword =>
-            this.config.specificKeywords.includes(keyword)
-        );
-
         const qualifyingOcrDetection =
-            sources.has('image') &&
-            hasSpecificKeyword &&
-            allKeywords.length >= this.config.keywordThreshold;
+            sources.has('image') && this.meetsThreshold(matched);
 
         if (qualifyingOcrDetection) {
             const tracking = this.trackOcrSpam(userId);
@@ -404,7 +430,7 @@ class AutoModManager {
                 '[AutoMod] Qualifying OCR spam detection',
                 `User: ${message.author.tag} (${userId})`,
                 `Matched keywords: ${allKeywords.join(', ')}`,
-                `Matches: ${allKeywords.length}/${this.config.keywordThreshold}`,
+                `Matches: ${allKeywords.length} (needs ${this.config.keywordThreshold}, or ${this.config.specificKeywordThreshold} specific)`,
                 `Qualifying instances: ${tracking.count}/${this.config.ocrSpamInstanceThreshold}`,
                 `OCR elapsed: ${ocrElapsedMs !== null
                     ? `${(ocrElapsedMs / 1000).toFixed(2)} seconds`
@@ -723,7 +749,9 @@ class AutoModManager {
                 return await this.recognize(buf, psm);
             } catch (error) {
                 ocrFailed = true;
-                console.warn(`[AutoMod OCR] ${name} PSM ${psm} failed: ${error.message}`);
+                console.warn(
+                    `[AutoMod OCR] ${name} PSM ${psm} failed: ${error.message}`
+                );
                 return null;
             }
         };
@@ -765,7 +793,7 @@ class AutoModManager {
                 .toBuffer();
 
             recordResult(
-                await safeRecognize(thresholded, 6, 'full-thresolded'),
+                await safeRecognize(thresholded, 6, 'full-thresholded'),
                 'full-thresholded',
                 6
             );
@@ -800,7 +828,7 @@ class AutoModManager {
                     timeout: OCR_TIMEOUT_MS,
                     maxBuffer: 10 * 1024 * 1024,
                     encoding: 'utf8',
-                    env: {...process.env, OMP_THREAD_LIMIT: '1'}
+                    env: { ...process.env, OMP_THREAD_LIMIT: '1' }
                 }
             );
 
