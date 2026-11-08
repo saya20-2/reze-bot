@@ -12,6 +12,7 @@ const MAX_FILESIZE = process.env.YTDLP_MAX_FILESIZE || '200M';
 const TIMEOUT_MS = (Number(process.env.YTDLP_TIMEOUT_SECONDS) || 600) * 1000;
 const MAX_AGE_MS = (Number(process.env.YTDLP_CACHE_HOURS) || 12) * 60 * 60 * 1000;
 const MAX_PARALLEL = 2;
+const DEBUG = process.env.YTDLP_DEBUG === 'false';
 
 const inflight = new Map();
 const waiting = [];
@@ -74,18 +75,33 @@ function parseProgress(line) {
 
 function download(id, videoUrl, emit) {
     const args = [
-        '-f', 'bestaudio[ext=webm]/bestaudio',
-        '--no-playlist', '--no-warnings',
-        '--quiet', '--progress', '--newline',
+        ...(DEBUG ? ['--verbose']:[]),
+        '--no-warnings',
+        '--quiet',
+        '--progress',
+        '--newline',
         '--progress-template', 'download:PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s',
         '--max-filesize', MAX_FILESIZE,
         '--js-runtimes', JS_RUNTIME,
+        '-f', 'bestaudio/best',
         '-o', path.join(CACHE_DIR, '%(id)s.%(ext)s'),
     ];
     if (COOKIES) args.push('--cookies', COOKIES);
     args.push('--', videoUrl);
 
     return new Promise((resolve, reject) => {
+        if (DEBUG) {
+        console.log('[yt-dlp] Execution diagnostics:', {
+        bin: BIN,
+        args,
+        cwd: process.cwd(),
+        home: process.env.HOME,
+        node: process.execPath,
+        nodeVersion: process.version,
+        path: process.env.PATH,
+        uid: process.getuid?.(),
+    });
+    }
         const child = spawn(BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
         let stdoutBuffer = '';
         let stderr = '';
@@ -123,7 +139,10 @@ function download(id, videoUrl, emit) {
         child.on('close', code => {
             clearTimeout(timer);
             if (timedOut) return reject(new Error('yt-dlp timed out'));
-            if (code !== 0) return reject(new Error(stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`));
+            if (code !== 0) {
+                console.error('[yt-dlp] Full stderr:', stderr);
+                return reject(new Error(stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`));
+            }
             const file = findCached(id);
             if (!file) return reject(new Error('yt-dlp finished but no audio file was found'));
             resolve(file);
