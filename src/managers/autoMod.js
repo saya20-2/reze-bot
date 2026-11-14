@@ -131,12 +131,12 @@ class AutoModManager {
                 text = `${text.slice(0, MAX_LOG_CHARS)}\n[truncated]`;
             }
 
-            const spoiler = `||\`\`\`\n${text}\n\`\`\`||`;
+            const logBlock = `\`\`\`\n${text}\n\`\`\``;
 
             const payload = {
                 content: options.summary
-                    ? `${options.summary}\n${spoiler}`
-                    : spoiler,
+                    ? `${options.summary}\n${logBlock}`
+                    : logBlock,
                 allowedMentions: { parse: [] }
             };
 
