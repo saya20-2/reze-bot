@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -17,7 +17,7 @@ module.exports = {
         if (!player) {
             return interaction.reply({
                 content: "*Click.* There's nothing to clear, I'm not even playing anything! Don't scare me like that, silly!",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -25,7 +25,7 @@ module.exports = {
         if (botChannelId && interaction.member.voice.channelId !== botChannelId) {
             return interaction.reply({
                 content: "Hey! You need to be in my voice channel to do that. No sneak attacks from outside!",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -38,11 +38,12 @@ module.exports = {
         if (removed === 0) {
             return interaction.reply({
                 content: "The queue is already empty, nothing left to blow up!",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
         queue.clearUpcoming();
+        lavalink.refreshPrefetch(interaction.guildId);
 
         const nowPlaying = queue.current
             ? ` **[${queue.current.info.title}](${queue.current.info.uri})** will finish playing, then it's quiet time.`

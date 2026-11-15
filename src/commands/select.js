@@ -1,4 +1,5 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
+const { createProgressReporter } = require('../managers/downloadProgress');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -18,7 +19,7 @@ module.exports = {
         if (!player || (!player.track && !queue.current)) {
             return interaction.reply({
                 content: "*Tick, tick, tick...* There's no music playing right now! Start something with `/play` first, silly!",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -26,21 +27,21 @@ module.exports = {
         if (botChannelId && interaction.member.voice.channelId !== botChannelId) {
             return interaction.reply({
                 content: "Hey! You need to be in my voice channel to do that. No sneak attacks from outside!",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
         if (queue.tracks.length === 0) {
             return interaction.reply({
                 content: "*Aw, snap!* The queue is empty, there's nothing to jump to!",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
         if (position > queue.tracks.length) {
             return interaction.reply({
                 content: `Position **${position}** doesn't exist, the queue only has **${queue.tracks.length}** track${queue.tracks.length === 1 ? '' : 's'}. Check \`/queue\` for the numbers!`,
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -48,18 +49,24 @@ module.exports = {
         const skipped = position - 1;
         queue.tracks.splice(0, skipped);
 
+        // The chosen song may still have to be downloaded, which takes longer than the 3 seconds
+        // Discord allows before the command has to be acknowledged.
+        await interaction.deferReply();
+        const progress = createProgressReporter(content => interaction.editReply(content));
+
         try {
-            const track = await lavalink.playNext(interaction.guildId);
-            return interaction.reply(
-                `Jumped to track **${position}**: **[${track.info.title}](${track.info.uri})**` +
-                (skipped > 0 ? ` (skipped ${skipped} track${skipped === 1 ? '' : 's'})` : '')
-            );
+            const track = await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
+            await progress.done();
+            if (!track) return interaction.editReply("*Aw, snap!* The queue ran dry before I could jump there!");
+            const text = `Jumped to track **${position}**: **[${track.info.title}](${track.info.uri})**` +
+                (skipped > 0 ? ` (skipped ${skipped} track${skipped === 1 ? '' : 's'})` : '');
+            const reply = await interaction.editReply(text);
+            lavalink.setNowPlaying(interaction.guildId, reply, text);
+            return reply;
         } catch (error) {
+            await progress.done();
             console.error('Select command error:', error);
-            return interaction.reply({
-                content: "*Fizzle...* Couldn't start that track. Check the logs!",
-                ephemeral: true
-            });
+            return interaction.editReply("*Fizzle...* Couldn't start that track. Check the logs!");
         }
     }
 };

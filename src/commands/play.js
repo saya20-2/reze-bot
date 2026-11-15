@@ -1,4 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
+const { createProgressReporter } = require('../managers/downloadProgress');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -7,7 +8,13 @@ module.exports = {
         .addStringOption(option =>
             option.setName('query')
                 .setDescription('The song name, URL, or playlist link to play')
-                .setRequired(true)),
+                .setRequired(true))
+        .addBooleanOption(option =>
+            option.setName('lyrics')
+                .setDescription('Show the lyrics below the now playing message (turn off again with /toggle-lyrics)'))
+        .addBooleanOption(option =>
+            option.setName('romanized')
+                .setDescription('Show romanized (romaji) lyrics instead of the original script, when available')),
     async execute(interaction) {
         await interaction.deferReply();
         const query = interaction.options.getString('query');
@@ -19,6 +26,8 @@ module.exports = {
 
         const lavalink = interaction.client.lavalinkManager;
         const queue = lavalink.getQueue(interaction.guildId);
+        queue.textChannelId = interaction.channelId;
+        lavalink.applyLyricsOptions(interaction);
         let player = lavalink.shoukaku.players.get(interaction.guildId);
 
         try {
@@ -28,53 +37,53 @@ module.exports = {
                     channelId: channel.id,
                     shardId: interaction.guild.shardId,
                 });
-
                 lavalink.setupPlayer(player);
             }
 
-            const node = player.node;
+            const wasIdle = !queue.current;
+            const progress = createProgressReporter(content => interaction.editReply(content));
             const isUrl = /^https?:\/\//i.test(query);
-            const searchTarget = isUrl ? query : `ytsearch:${query}`;
-            const res = await node.rest.resolve(searchTarget);
+            const res = await player.node.rest.resolve(isUrl ? query : `ytsearch:${query}`);
 
             if (!res || res.loadType === 'empty' || res.loadType === 'error') {
-                console.error(`[Lavalink Resolve Error] Type: ${res?.loadType}`, res?.data);
-                return interaction.editReply('Oops! Reze couldn’t find anything matching that query. Try a different search!');
+                return interaction.editReply('Oops! Reze couldn’t find anything matching that query.');
             }
-
-            const wasIdle = !queue.current;
 
             if (res.loadType === 'playlist') {
-                let tracks = res.data.tracks;
-                if (!tracks || !tracks.length) {
-                    return interaction.editReply('Couldn’t extract tracks from that playlist!');
-                }
-
-                const selected = res.data.info?.selectedTrack ?? -1;
-                const startedMidway = selected > 0 && selected < tracks.length;
-                if (startedMidway) tracks = tracks.slice(selected);
-
+                const tracks = res.data.tracks;
+                if (!tracks || !tracks.length) return interaction.editReply('Couldn’t extract tracks from playlist!');
                 queue.addMultiple(tracks);
-                if (wasIdle) await lavalink.playNext(interaction.guildId);
-
-                return interaction.editReply(
-                    `Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks into the queue!` +
-                    (startedMidway ? ' (Starting from the video in your link.)' : '')
-                );
+                if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
+                await progress.done();
+                const text = `Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks!`;
+                const reply = await interaction.editReply(text);
+                if (wasIdle) lavalink.setNowPlaying(interaction.guildId, reply, text);
+                else { lavalink.refreshPrefetch(interaction.guildId); lavalink.flushLyrics(interaction.guildId); }
+                return reply;
             }
 
-            const tracks = Array.isArray(res.data) ? res.data : [res.data];
-            if (!tracks.length) {
-                return interaction.editReply('No track results found!');
+            const trackToPlay = res.loadType === 'search' ? res.data[0] : res.data;
+            if (!trackToPlay || !trackToPlay.info) {
+                return interaction.editReply('No valid track results found!');
             }
 
-            const track = tracks[0];
-            queue.add(track);
+            queue.add(trackToPlay);
+
+            const link = `**[${trackToPlay.info.title}](${trackToPlay.info.uri})**`;
+
             if (wasIdle) {
-                await lavalink.playNext(interaction.guildId);
-                return interaction.editReply(`Now playing: **[${track.info.title}](${track.info.uri})** 💣`);
+                await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
+                await progress.done();
+                const text = `Now playing: ${link}`;
+                const reply = await interaction.editReply(text);
+                lavalink.setNowPlaying(interaction.guildId, reply, text);
+                return reply;
             }
-            return interaction.editReply(`Added to queue: **[${track.info.title}](${track.info.uri})** ⚡`);
+
+            const reply = await interaction.editReply(`Added to queue: ${link}`);
+            lavalink.refreshPrefetch(interaction.guildId);
+            lavalink.flushLyrics(interaction.guildId);
+            return reply;
         } catch (error) {
             console.error('Play command error:', error);
             return interaction.editReply('Madokami hasnt blessed us trying to play that track.');
