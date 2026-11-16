@@ -15,6 +15,7 @@ const MAX_PIXELS = 25_000_000;
 const OCR_SIZE = 3000;
 const MIN_USEFUL_TEXT_LENGTH = 20;
 const MAX_LOG_CHARS = 1800;
+const CROSSPOST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const VERBOSE = process.env.AUTOMOD_DEBUG === 'true';
 const execFileAsync = promisify(execFile);
 const OCR_CONFIDENCE = { specific: 40, generic: 65 };
@@ -501,7 +502,11 @@ class AutoModManager {
                         `Cross-posted identical link across ${linkData.channels.size} channels within 5 mins`
                     ];
 
-                    await this.executeBan(message, crossPostReasons);
+                    await this.executeTimeout(
+                        message,
+                        crossPostReasons,
+                        CROSSPOST_TIMEOUT_MS
+                    );
                     this.userLinkTracker.delete(userId);
                     break;
                 }
@@ -872,6 +877,38 @@ class AutoModManager {
 
     isImage(contentType) {
         return contentType && contentType.startsWith('image/');
+    }
+
+    async executeTimeout(message, reasons, durationMs) {
+        try {
+            const member = message.member;
+            const username = message.author.tag;
+
+            if (!member) return;
+
+            if (!member.moderatable) {
+                const warnLog =
+                    `[AutoMod] Could not timeout ${username} (${message.author.id}): member is not moderatable (role hierarchy or missing permission). Reasons: ${reasons.join(', ')}`;
+
+                console.warn(warnLog);
+                await this.sendLog(message.guild, warnLog);
+                return;
+            }
+
+            await member.timeout(
+                durationMs,
+                `AutoMod Timeout: ${reasons.join(', ')}`
+            );
+
+            const hours = Math.round(durationMs / (60 * 60 * 1000));
+            const timeoutLog =
+                `[AutoMod] Timed out ${username} (${message.author.id}) for ${hours}h: ${reasons.join(', ')}`;
+
+            console.log(timeoutLog);
+            await this.sendLog(message.guild, timeoutLog);
+        } catch (error) {
+            console.error('Failed to auto-timeout user:', error);
+        }
     }
 
     async executeBan(message, reasons) {
