@@ -2,6 +2,7 @@ const { Shoukaku, Connectors } = require('shoukaku');
 const ytdlp = require('./Ytdlp');
 const { formatNextLine } = require('./downloadProgress');
 const lyrics = require('./lyrics');
+const { buildQueueEmbed } = require('./queueView');
 const { EmbedBuilder, ActivityType } = require('discord.js');
 const DISCONNECT_TIMEOUT_MS = 30 * 60 * 1000;
 const EARLY_END_MS = 15000;
@@ -11,14 +12,23 @@ const EMOTE_DOWNLOADING = 'Mad_oka';
 const EMOTE_DONE = 'MadoVibing_MM';
 const NOW_PLAYING_EDIT_INTERVAL_MS = 2000;
 const MAX_LYRICS_MESSAGES = 3;
+const QUEUE_VIEW_DEBOUNCE_MS = 1000;
 
 function newLyricsState() {
     return { enabled: false, romanized: false, pending: false, token: 0, channelId: null, messageIds: [] };
 }
 
+// Who asked for a song. Stored on the track itself so it follows it through the queue (and into /karaoke later)
+function toRequester(user) {
+    if (!user) return null;
+    return { id: user.id, username: user.username, displayName: user.globalName ?? user.username };
+}
+
 class MusicQueue {
-    constructor(guildId) {
+    constructor(guildId, onChange = () => {}) {
         this.guildId = guildId;
+        this.onChange = onChange;
+        this.queueView = null; 
         this.tracks = [];
         this.current = null;
         this.retry = null; 
@@ -28,12 +38,16 @@ class MusicQueue {
         this.lyrics = newLyricsState();
     }
 
-    add(track) {
+    add(track, requester = null) {
+        if (requester) track.requester = requester;
         this.tracks.push(track);
+        this.onChange();
     }
 
-    addMultiple(tracks) {
+    addMultiple(tracks, requester = null) {
+        if (requester) for (const track of tracks) track.requester = requester;
         this.tracks.push(...tracks);
+        this.onChange();
     }
 
     shuffle() {
@@ -41,10 +55,12 @@ class MusicQueue {
             const j = Math.floor(Math.random() * (i + 1));
             [this.tracks[i], this.tracks[j]] = [this.tracks[j], this.tracks[i]];
         }
+        this.onChange();
     }
 
     clearUpcoming() {
         this.tracks = [];
+        this.onChange();
     }
 
     clear() {
@@ -54,6 +70,7 @@ class MusicQueue {
         this.playable = null;
         this.nowPlaying = null;
         this.lyrics = newLyricsState();
+        this.onChange();
     }
 }
 
@@ -96,7 +113,7 @@ class LavalinkManager {
 
     getQueue(guildId) {
         if (!this.queues.has(guildId)) {
-            this.queues.set(guildId, new MusicQueue(guildId));
+            this.queues.set(guildId, new MusicQueue(guildId, () => this.refreshQueueView(guildId)));
         }
         return this.queues.get(guildId);
     }
@@ -151,6 +168,7 @@ class LavalinkManager {
             this.detachNowPlaying(guildId);
             this.scheduleIdle(guildId);
             this.client.updatePresence();
+            this.refreshQueueView(guildId);
             return null;
         }
 
@@ -160,6 +178,7 @@ class LavalinkManager {
         queue.startedAt = Date.now();
         queue.retry = null;
         queue.playable = null;
+        this.refreshQueueView(guildId);
         this.clearIdle(guildId);
         this.deleteLyricsMessages(guildId);
         try {
@@ -171,6 +190,7 @@ class LavalinkManager {
             queue.playable = null;
             this.scheduleIdle(guildId);
             this.client.updatePresence();
+            this.refreshQueueView(guildId);
             throw error;
         }
 
@@ -326,12 +346,64 @@ class LavalinkManager {
         return track.encoded;
     }
 
-    // ---- Lyrics ----------------------------------------------------------------------------------------------
-    // Lyrics live in their own message(s) right below the "Now playing" message: message content always renders
-    // above link previews, so lyrics inside that message could never sit under the video embed.
+    requesterFrom(interaction) {
+        return toRequester(interaction.user);
+    }
 
-    // Reads the optional `lyrics` / `romanized` options of /play, /search and /radio. Returns nothing; if lyrics
-    // should show up for a song that is already playing, flushLyrics() posts them once the command has replied.
+    // Writes one line per queued song, so a song can always be traced back to whoever asked for it
+    logQueued(guildId, tracks, requester) {
+        const list = Array.isArray(tracks) ? tracks : [tracks];
+        const who = requester ? `${requester.username} (${requester.id})` : 'unknown';
+        if (list.length === 1) {
+            console.log(`[Queue] guild ${guildId}: ${who} queued "${list[0].info.title}" <${list[0].info.uri}>`);
+        } else {
+            console.log(`[Queue] guild ${guildId}: ${who} queued ${list.length} tracks, first: "${list[0].info.title}"`);
+        }
+    }
+
+    setQueueView(guildId, message, page) {
+        if (!message?.id) return;
+        const queue = this.getQueue(guildId);
+        if (queue.queueView?.timer) clearTimeout(queue.queueView.timer);
+        const view = {
+            channelId: message.channelId,
+            messageId: message.id,
+            page,
+            lastKey: JSON.stringify(buildQueueEmbed(queue, page).toJSON()),
+            timer: null,
+            pending: Promise.resolve(),
+        };
+        queue.queueView = view;
+    }
+
+    refreshQueueView(guildId) {
+        const view = this.queues.get(guildId)?.queueView;
+        if (!view || view.timer) return;
+        view.timer = setTimeout(() => {
+            view.timer = null;
+            view.pending = view.pending.then(() => this.editQueueView(guildId, view)).catch(() => {});
+        }, QUEUE_VIEW_DEBOUNCE_MS);
+    }
+
+    async editQueueView(guildId, view) {
+        const queue = this.getQueue(guildId);
+        if (queue.queueView !== view) return;
+        const embed = buildQueueEmbed(queue, view.page);
+        const key = JSON.stringify(embed.toJSON());
+        if (key === view.lastKey) return;
+        view.lastKey = key;
+        try {
+            const channel = await this.client.channels.fetch(view.channelId);
+            await channel.messages.edit(view.messageId, { embeds: [embed] });
+        } catch (error) {
+            if (error.code === 10008 || error.code === 10003) {
+                if (queue.queueView === view) queue.queueView = null; // message or channel was deleted
+            } else {
+                console.warn(`[Lavalink] Could not edit the queue message: ${error.message}`);
+            }
+        }
+    }
+
     applyLyricsOptions(interaction) {
         const enabled = interaction.options.getBoolean('lyrics');
         const romanized = interaction.options.getBoolean('romanized');

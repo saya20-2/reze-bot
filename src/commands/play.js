@@ -28,6 +28,7 @@ module.exports = {
         const queue = lavalink.getQueue(interaction.guildId);
         queue.textChannelId = interaction.channelId;
         lavalink.applyLyricsOptions(interaction);
+        const requester = lavalink.requesterFrom(interaction);
         let player = lavalink.shoukaku.players.get(interaction.guildId);
 
         try {
@@ -52,7 +53,8 @@ module.exports = {
             if (res.loadType === 'playlist') {
                 const tracks = res.data.tracks;
                 if (!tracks || !tracks.length) return interaction.editReply('Couldn’t extract tracks from playlist!');
-                queue.addMultiple(tracks);
+                queue.addMultiple(tracks, requester);
+                lavalink.logQueued(interaction.guildId, tracks, requester);
                 if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
                 await progress.done();
                 const text = `Boom! Loaded playlist **${res.data.info.name}** with **${tracks.length}** tracks!`;
@@ -67,7 +69,8 @@ module.exports = {
                 return interaction.editReply('No valid track results found!');
             }
 
-            queue.add(trackToPlay);
+            queue.add(trackToPlay, requester);
+            lavalink.logQueued(interaction.guildId, trackToPlay, requester);
 
             const link = `**[${trackToPlay.info.title}](${trackToPlay.info.uri})**`;
 

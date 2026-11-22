@@ -57,8 +57,10 @@ module.exports = {
             const wasIdle = !queue.current;
             const progress = createProgressReporter(content => interaction.editReply(content));
 
-            queue.add(seed);
-            queue.addMultiple(related);
+            const requester = lavalink.requesterFrom(interaction);
+            queue.add(seed, requester);
+            queue.addMultiple(related, requester);
+            lavalink.logQueued(interaction.guildId, [seed, ...related], requester);
             if (wasIdle) await lavalink.playNext(interaction.guildId, { onProgress: progress.report, silent: true });
             await progress.done();
 
